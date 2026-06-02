@@ -116,3 +116,37 @@ Reads the Status register (`AS5600_STATUS_MD`, `AS5600_STATUS_ML`, `AS5600_STATU
 esp_err_t as5600_read_angles_and_status(as5600_dev_t *dev, uint16_t *raw_angle, uint16_t *angle, uint8_t *status);
 ```
 Performs a fast 5-byte sequential burst read to acquire status and both angle variables in one I2C transaction.
+
+---
+![SmartSensing.me Logo](https://smartsensing.me/ssme-logo.png)
+
+## 📝 Description
+
+This project is part of the **SmartSensing.me** ecosystem. We apply real fundamentals of instrumentation engineering and high-performance embedded systems.
+
+Unlike superficial, clickbait content, this repository delivers:
+- **Originality:** Unique implementations based on nearly 30 years of academic experience.
+- **Technical Depth:** Professional usage of the ESP-IDF framework and FreeRTOS.
+- **Pedagogy:** Documented and structured code for those seeking genuine technical growth.
+
+> "We transform signals from the physical world into digital intelligence, with no shortcuts."
+
+---
+
+## 👤 About the Author
+
+**José Alexandre de França** *Associate Professor at the Department of Electrical Engineering of UEL*
+
+Electrical Engineer with nearly three decades of experience in undergraduate and postgraduate teaching. PhD in Electrical Engineering, researcher in electronic instrumentation, and embedded systems developer. SmartSensing.me is my commitment to raising the bar of technology education in Brazil.
+
+- 🌐 **Website:** [smartsensing.me](https://smartsensing.me)
+- 📧 **E-mail:** [info@smartsensing.me](mailto:info@smartsensing.me)
+- 📺 **YouTube:** [@smartsensingme](https://youtube.com/@smartsensingme)
+- 📸 **Instagram:** [@smartsensing.me](https://instagram.com/smartsensing.me)
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+
