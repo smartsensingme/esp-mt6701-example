@@ -1,0 +1,10 @@
+menu "AS5600 Driver Configuration"
+
+    config AS5600_THREAD_SAFE
+        bool "Thread-safe driver"
+        default y
+        help
+            Enable thread-safety. When checked, the driver uses a Mutex semaphore to synchronize
+            calls. If disabled, all mutex instructions are compiled out for maximum performance.
+
+endmenu

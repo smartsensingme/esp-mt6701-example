@@ -1,0 +1,6 @@
+[submodule "components/kalman-filter-c"]
+	path = components/kalman-filter-c
+	url = https://github.com/smartsensingme/kalman-filter-c.git
+[submodule "components/as5600"]
+	path = components/as5600
+	url = git@github-ssme:smartsensingme/as5600-esp-idf-component.git

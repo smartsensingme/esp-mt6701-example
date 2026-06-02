@@ -1,0 +1,15 @@
+menu "Application I2C Configurations"
+
+    config APP_I2C_SDA_PIN
+        int "GPIO number for I2C SDA"
+        default 8
+        help
+            GPIO pin used for I2C SDA data line.
+
+    config APP_I2C_SCL_PIN
+        int "GPIO number for I2C SCL"
+        default 9
+        help
+            GPIO pin used for I2C SCL clock line.
+
+endmenu

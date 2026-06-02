@@ -1,0 +1,7 @@
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+*.swp
+*.o
+*.d
