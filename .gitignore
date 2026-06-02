@@ -5,3 +5,12 @@ dependencies.lock
 *.swp
 *.o
 *.d
+
+# macOS System Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Icon\r
+*.icloud
