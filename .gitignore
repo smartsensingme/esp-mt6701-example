@@ -5,6 +5,8 @@ dependencies.lock
 *.swp
 *.o
 *.d
+.cache/
+.vscode/
 
 # macOS System Files
 .DS_Store
@@ -14,3 +16,14 @@ dependencies.lock
 .Trashes
 Icon\r
 *.icloud
+.DocumentRevisions-V100
+.fseventsd
+.LSOverride
+.TemporaryItems
+.VolumeIcon.icns
+.com.apple.timemachine.donotbackup
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
