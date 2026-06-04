@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "kalman.h"
+#include "engine_driver.h"
 #include <stdio.h>
 
 #define I2C_PORT_NUM I2C_NUM_0
@@ -93,9 +94,26 @@ static float raw_to_degrees(uint16_t raw) {
   return ((float)raw * 360.0f) / 4096.0f;
 }
 
+// Static configuration for H-Bridge engine driver using Kconfig settings
+static struct engine_config motor = {
+    .pin_fwd = CONFIG_ENGINE_PIN_RPWM,
+    .pin_rev = CONFIG_ENGINE_PIN_LPWM,
+    .pin_enable = CONFIG_ENGINE_PIN_ENABLE,
+    .pwm_freq_hz = CONFIG_ENGINE_PWM_FREQ_HZ,
+};
+
 void app_main(void) {
   ESP_LOGI(TAG, "AS5600 Magnetic Encoder Demonstration - High Speed Raw "
                 "Sampling & 3D Kalman Filter (ESP-IDF v6)");
+
+  // Initialize H-Bridge Engine Driver
+  ESP_LOGI(TAG, "Initializing H-Bridge motor driver...");
+  if (engine_driver_init(&motor) == 0) {
+      ESP_LOGI(TAG, "H-Bridge motor driver successfully initialized. Setting 50%% speed Forward.");
+      engine_driver_set_speed(&motor, 50.0f);
+  } else {
+      ESP_LOGE(TAG, "Failed to initialize H-Bridge motor driver!");
+  }
 
   // 1. Initialize I2C Master Bus
   i2c_master_bus_config_t bus_config = {
