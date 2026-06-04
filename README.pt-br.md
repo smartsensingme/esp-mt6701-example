@@ -1,34 +1,42 @@
-# Sensor Magnético AS5600 & Filtro de Kalman - ESP-IDF v6
+# Sensor Magnético AS5600, Controle de Motor por Ponte H & Filtro de Kalman - ESP-IDF v6
 
 *Read in other languages: [English](README.md)*
 
-Este repositório contém a demonstração migrada da integração do encoder magnético **AS5600** com o **ESP-IDF v6**, utilizando um componente de sensor nativo e reutilizável para ESP-IDF, e um **Filtro de Kalman 3D** avançado para estimar a posição, velocidade (RPM) e aceleração (RPM/s) de um eixo giratório em tempo real.
+Este repositório contém a demonstração da integração do encoder magnético **AS5600** e do driver de motor por ponte H **BTS7960 (IBT-2)** com o **ESP-IDF v6**, utilizando componentes nativos e reutilizáveis para ESP-IDF, e um **Filtro de Kalman 3D** avançado para estimar a posição, velocidade (RPM) e aceleração (RPM/s) de um eixo giratório em tempo real.
 
-O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consome suas dependências externas através de subpódulos do Git.
+O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consome suas dependências externas através de submódulos do Git.
 
 ---
 
 ## 🛠️ Arquitetura do Projeto
 
 O espaço de trabalho está estruturado da seguinte forma:
-- **`components/as5600`**: Componente de driver independente do sensor AS5600, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`).
+- **`components/as5600`**: Submódulo Git para o driver do sensor AS5600, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`).
+- **`components/esp-engine-driver`**: Submódulo Git para o driver de motor por ponte H BTS7960, utilizando o periférico de alta performance **MCPWM** nativo do ESP32-S3.
 - **`components/kalman-filter-c`**: Submódulo Git apontando para a biblioteca pura em C do Filtro de Kalman.
-- **`main/`**: Código da aplicação que inicializa o barramento I2C, configura o sensor AS5600 e executa o loop de estimativa a 1 kHz.
+- **`main/`**: Código da aplicação que inicializa o barramento I2C, configura o sensor AS5600, inicializa o driver da ponte H (aplicando 50% de PWM Horário para teste) e executa o loop de estimativa a 1 kHz.
 
 ---
 
 ## ⚙️ Configurações do Projeto
 
-### Segurança de Threads (Configuração do Componente)
-O componente `as5600` inclui um arquivo `Kconfig` que expõe uma flag de compilação:
-*   **`CONFIG_AS5600_THREAD_SAFE`** (Padrão: `y`):
-    *   *Marcado:* Utiliza um Mutex do FreeRTOS para sincronizar a comunicação ao chamar o driver a partir de múltiplas tarefas.
-    *   *Desmarcado:* Remove todos os bloqueios de mutex da compilação para fornecer velocidades máximas de transação I2C, sem travas (lock-free) e com overhead zero.
+### Segurança de Threads (Configurações dos Componentes)
+Ambos os drivers incluem flags do Kconfig para alternar a sincronização por Mutex do FreeRTOS em tempo de compilação:
+*   **`CONFIG_AS5600_THREAD_SAFE`** (Padrão: `y`): Sincroniza os acessos aos registradores via barramento I2C.
+*   **`CONFIG_ENGINE_THREAD_SAFE`** (Padrão: `y`): Sincroniza a rotina de escrita de velocidade do motor.
+*   *Nota:* Se desmarcados, todas as operações de mutex correspondentes são compiladas fora para fornecer transações livres de travas (lock-free) e com overhead zero.
 
 ### Configuração de Pinos GPIO I2C (Configuração da Aplicação)
-Você pode configurar os pinos GPIO para as linhas SCL e SDA diretamente usando o `menuconfig`. Os padrões configurados em `main/Kconfig.projbuild` são:
+Configurável diretamente via `menuconfig`. Padrões:
 *   **`CONFIG_APP_I2C_SDA_PIN`** (Padrão: `8`)
 *   **`CONFIG_APP_I2C_SCL_PIN`** (Padrão: `9`)
+
+### Configuração do Driver do Motor / Ponte H (Configuração do Componente)
+Expõe as seguintes opções no Kconfig para controle do BTS7960:
+*   **`CONFIG_ENGINE_PWM_FREQ_HZ`** (Padrão: `20000` / 20 kHz): Frequência do PWM físico. Sob o limite de 80 MHz do clock do timer do MCPWM no ESP32-S3, essa frequência fornece exatamente **4000 passos de resolução**.
+*   **`CONFIG_ENGINE_PIN_RPWM`** (Padrão: `1`): GPIO para o sinal PWM Horário (RPWM).
+*   **`CONFIG_ENGINE_PIN_LPWM`** (Padrão: `2`): GPIO para o sinal PWM Anti-horário (LPWM).
+*   **`CONFIG_ENGINE_PIN_ENABLE`** (Padrão: `3`): GPIO de Enable para R_EN/L_EN interligados.
 
 ---
 
@@ -64,7 +72,7 @@ Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o loop pr
     idf.py set-target esp32s3
     idf.py menuconfig
     ```
-    *(Vá em `Application I2C Configurations` para modificar os pinos I2C, ou em `AS5600 Driver Configuration` para alternar a segurança de threads).*
+    *(Ajuste os pinos de I2C, pinos de MCPWM e frequência, e configure as flags de thread-safety de acordo com sua necessidade).*
 
 4.  **Compile o Projeto:**
     ```bash
@@ -78,18 +86,23 @@ Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o loop pr
 
 ---
 
-## 📦 Como Reutilizar este Driver em Outro Projeto
+## 📦 Como Reutilizar estes Drivers em Outro Projeto
 
-Como o driver foi desenvolvido como um componente ESP-IDF limpo e desacoplado, você pode adicioná-lo diretamente a outro projeto:
-1. Adicione-o como submódulo Git na pasta `components/as5600` do seu novo projeto:
+Como os drivers foram desenvolvidos como componentes ESP-IDF limpos e desacoplados, você pode adicioná-los diretamente a outro projeto:
+1. Adicione o driver do sensor AS5600:
    ```bash
    git submodule add git@github-ssme:smartsensingme/as5600-esp-idf-component.git components/as5600
    ```
-2. No código da sua aplicação, inclua-o:
+2. Adicione o driver do motor:
+   ```bash
+   git submodule add git@github-ssme:smartsensingme/esp-engine-driver-.git components/esp-engine-driver
+   ```
+3. No código da sua aplicação, inclua-os:
    ```c
    #include "as5600.h"
+   #include "engine_driver.h"
    ```
-3. As configurações do componente (como a segurança de threads) aparecerão automaticamente no `menuconfig` do seu projeto!
+4. As configurações dos componentes aparecerão automaticamente no `menuconfig` do seu novo projeto!
 
 ---
 ![Logo SmartSensing.me](https://smartsensing.me/ssme-logo.png)
