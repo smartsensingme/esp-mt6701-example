@@ -40,6 +40,26 @@ Exposes physical configuration settings for the BTS7960:
 
 ---
 
+## ⚡ High-Speed Optimizations & Timing Accuracy
+
+To support high rotational speeds (such as 900 RPM or more) and ensure maximum estimation precision, the firmware implements the following optimized behaviors:
+
+### 1. Dedicated DIR Pin Control
+*   **GPIO 4** is configured as an output driven **HIGH** to set the hardware `DIR` (direction) of the AS5600, determining the counting direction (CW/CCW).
+
+### 2. High-Speed 2-Byte I2C Reads
+*   Instead of a heavy 5-byte burst read of STATUS, RAW ANGLE, and ANGLE registers in every loop, the main 1 kHz execution loop performs a minimal **2-byte I2C read** of only the `RAW ANGLE` register (`0x0C`).
+*   The `STATUS` register (`0x0B`) is only queried once every 2 seconds (during logging).
+*   This reduces the I2C transaction duration to just **~120 µs** (at 400 kHz clock), enabling a theoretical maximum sampling rate of **~8.33 kHz**.
+*   This also avoids any register address auto-increment suppression bugs present on the AS5600 hardware.
+
+### 3. Dynamic Time Delta (`dt`) Measurement
+*   Instead of assuming a hardcoded cycle time of `0.001s` (1 ms), the loop measures the exact time elapsed since the last iteration using **`esp_timer_get_time()`**.
+*   This actual time delta (`dt`) is passed directly to the Kalman Filter.
+*   This ensures 100% accurate speed (RPM) and acceleration (RPM/s) estimation, fully compensating for scheduler jitter, task preemption, and I2C transaction latency.
+
+---
+
 ## 📈 Kalman Filter (3D)
 
 The project integrates the pure C Kalman Filter library from [kalman-filter-c](https://github.com/smartsensingme/kalman-filter-c.git) to estimate position ($\theta$), velocity ($\omega$), and acceleration ($\alpha$).

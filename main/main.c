@@ -1,13 +1,17 @@
 #include "as5600.h"
+#include "driver/gpio.h"
 #include "driver/i2c_master.h"
+#include "engine_driver.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "kalman.h"
-#include "engine_driver.h"
 #include <stdio.h>
 
 #define I2C_PORT_NUM I2C_NUM_0
+#define AS5600_DIR_PIN                                                         \
+  GPIO_NUM_4 // Pino para controle de direção (DIR) do AS5600
 
 static const char *TAG = "APP_MAIN";
 
@@ -103,16 +107,36 @@ static struct engine_config motor = {
 };
 
 void app_main(void) {
+  // Configuração do pino DIR do AS5600 (GPIO 4) para nível lógico HIGH (3.3V)
+  // Isso atende ao requisito de manter o pino DIR em nível alto (sinal de 5V ou
+  // compatível) para definir a direção.
+  ESP_LOGI(
+      TAG,
+      "Configurando GPIO %d como saída em nível HIGH para o DIR do AS5600...",
+      AS5600_DIR_PIN);
+  gpio_config_t io_conf = {
+      .pin_bit_mask = (1ULL << AS5600_DIR_PIN),
+      .mode = GPIO_MODE_OUTPUT,
+      .pull_up_en = GPIO_PULLUP_DISABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE,
+  };
+  ESP_ERROR_CHECK(gpio_config(&io_conf));
+  ESP_ERROR_CHECK(gpio_set_level(AS5600_DIR_PIN, 1));
+  ESP_LOGI(TAG, "GPIO %d configurado com sucesso e definido como HIGH",
+           AS5600_DIR_PIN);
+
   ESP_LOGI(TAG, "AS5600 Magnetic Encoder Demonstration - High Speed Raw "
                 "Sampling & 3D Kalman Filter (ESP-IDF v6)");
 
   // Initialize H-Bridge Engine Driver
   ESP_LOGI(TAG, "Initializing H-Bridge motor driver...");
   if (engine_driver_init(&motor) == 0) {
-      ESP_LOGI(TAG, "H-Bridge motor driver successfully initialized. Setting 50%% speed Forward.");
-      engine_driver_set_speed(&motor, 50.0f);
+    ESP_LOGI(TAG, "H-Bridge motor driver successfully initialized. Setting "
+                  "50%% speed Forward.");
+    engine_driver_set_speed(&motor, 50.0f);
   } else {
-      ESP_LOGE(TAG, "Failed to initialize H-Bridge motor driver!");
+    ESP_LOGE(TAG, "Failed to initialize H-Bridge motor driver!");
   }
 
   // 1. Initialize I2C Master Bus
@@ -203,29 +227,44 @@ void app_main(void) {
 
   uint32_t loop_count = 0;
   TickType_t last_wake_time = xTaskGetTickCount();
+  int64_t last_time = esp_timer_get_time();
 
   while (1) {
     uint16_t raw_val = 0;
-    uint16_t filter_angle_val = 0;
-    uint8_t status = 0;
 
-    // Fetch values at 1 kHz (every 1 ms)
-    // If thread safety is disabled, this call is a direct, lock-free,
-    // zero-overhead I2C transaction
-    if (as5600_read_angles_and_status(&as5600_dev, &raw_val, &filter_angle_val,
-                                      &status) == ESP_OK) {
+    // Calcula o dt real entre duas amostragens. Você tem que garantir que esse
+    // dt é bem conhecido para o filtro de Kalman funcionar corretamente.
+    int64_t now = esp_timer_get_time();
+    float dt = (float)(now - last_time) /
+               1000000.0f; // Convert microseconds to seconds
+    last_time = now;
+
+    // Fetch RAW ANGLE at 1 kHz (every 1 ms)
+    // Only 2 bytes read, maximizes rate and avoids auto-increment bug on other
+    // registers
+    if (as5600_read_raw_angle(&as5600_dev, &raw_val) == ESP_OK) {
       float raw_deg = raw_to_degrees(raw_val);
-      engine_angle_kalman_3d_update(&filter, raw_deg, 0.001f);
+      // Pass the measured dt to the Kalman filter
+      if (dt > 0.0f &&
+          dt <
+              0.1f) { // Protection against startup jump or scheduling anomalies
+        engine_angle_kalman_3d_update(&filter, raw_deg, dt);
+      }
     }
 
     // Print sensor status every 2 seconds (2000 ticks of 1 ms)
     if (loop_count % 2000 == 0) {
-      bool md = (status & AS5600_STATUS_MD) != 0;
-      bool ml = (status & AS5600_STATUS_ML) != 0;
-      bool mh = (status & AS5600_STATUS_MH) != 0;
-      printf("[AS5600 Status] Byte: 0x%02X | Magnet: %s | Strength: %s\n",
-             status, md ? "DETECTED" : "NOT DETECTED",
-             ml ? "TOO WEAK" : (mh ? "TOO STRONG" : "OK"));
+      uint8_t status = 0;
+      if (as5600_read_status(&as5600_dev, &status) == ESP_OK) {
+        bool md = (status & AS5600_STATUS_MD) != 0;
+        bool ml = (status & AS5600_STATUS_ML) != 0;
+        bool mh = (status & AS5600_STATUS_MH) != 0;
+        printf("[AS5600 Status] Byte: 0x%02X | Magnet: %s | Strength: %s\n",
+               status, md ? "DETECTED" : "NOT DETECTED",
+               ml ? "TOO WEAK" : (mh ? "TOO STRONG" : "OK"));
+      } else {
+        printf("[AS5600 Status] Failed to read status\n");
+      }
     }
 
     // Print estimated state variables every 200 ms (200 ticks of 1 ms)
@@ -238,8 +277,8 @@ void app_main(void) {
       float est_accel_rpm_s = est_accel_dps2 / 6.0f; // dps/s^2 to RPM/s
 
       printf("Raw Angle: %.3f deg | Kalman Angle: %.3f deg | Speed: %.3f RPM | "
-             "Accel: %.3f RPM/s\n",
-             raw_deg, est_angle, est_speed_rpm, est_accel_rpm_s);
+             "Accel: %.3f RPM/s | dt: %.6f s\n",
+             raw_deg, est_angle, est_speed_rpm, est_accel_rpm_s, dt);
     }
 
     loop_count++;

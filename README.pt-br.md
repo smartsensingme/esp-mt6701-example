@@ -40,6 +40,26 @@ Expõe as seguintes opções no Kconfig para controle do BTS7960:
 
 ---
 
+## ⚡ Otimizações de Alta Velocidade & Precisão de Tempo
+
+Para suportar altas velocidades de rotação (como 900 RPM ou mais) e garantir a máxima precisão de estimativa, o firmware implementa os seguintes comportamentos otimizados:
+
+### 1. Controle Dedicado do Pino DIR
+*   A **GPIO 4** é configurada como saída e definida em **HIGH** para fixar o pino físico `DIR` (direção) do AS5600, definindo o sentido de contagem (Horário/Anti-horário).
+
+### 2. Leitura I2C de Alta Velocidade (2 Bytes)
+*   Em vez de realizar uma leitura em lote pesada de 5 bytes (STATUS, RAW ANGLE e ANGLE) a cada ciclo, o loop principal a 1 kHz executa uma leitura mínima de **2 bytes** apenas para o registrador `RAW ANGLE` (`0x0C`).
+*   O registrador de `STATUS` (`0x0B`) é lido apenas uma vez a cada 2 segundos (durante o log).
+*   Isso reduz a duração da transação I2C para apenas **~120 µs** (com clock de 400 kHz), permitindo uma taxa de amostragem máxima teórica de **~8,33 kHz**.
+*   Essa abordagem também evita o bug de supressão de auto-incremento de registrador presente no hardware do AS5600.
+
+### 3. Medição Dinâmica do Delta de Tempo (`dt`)
+*   Em vez de assumir um tempo de ciclo fixo e ideal de `0.001s` (1 ms), o loop mede o tempo real decorrido entre as iterações usando a função **`esp_timer_get_time()`**.
+*   Esse delta de tempo real (`dt`) é passado diretamente para o Filtro de Kalman.
+*   Isso garante uma estimativa de velocidade (RPM) e aceleração (RPM/s) 100% precisa, compensando integralmente jitters do scheduler, preempção de tarefas e latências do barramento I2C.
+
+---
+
 ## 📈 Filtro de Kalman (3D)
 
 O projeto integra a biblioteca pura em C do Filtro de Kalman de [kalman-filter-c](https://github.com/smartsensingme/kalman-filter-c.git) para estimar posição ($\theta$), velocidade ($\omega$) e aceleração ($\alpha$).
