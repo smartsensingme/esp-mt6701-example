@@ -3,7 +3,7 @@
 	url = https://github.com/smartsensingme/kalman-filter-c.git
 [submodule "components/as5600"]
 	path = components/as5600
-	url = git@github-ssme:smartsensingme/as5600-esp-idf-component.git
+	url = https://github.com/smartsensingme/as5600-esp-idf-component.git
 [submodule "components/esp-engine-driver"]
 	path = components/esp-engine-driver
-	url = git@github-ssme:smartsensingme/esp-engine-driver-.git
+	url = https://github.com/smartsensingme/esp-engine-driver-.git
