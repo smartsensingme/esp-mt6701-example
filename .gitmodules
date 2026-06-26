@@ -1,9 +1,9 @@
 [submodule "components/kalman-filter-c"]
 	path = components/kalman-filter-c
 	url = https://github.com/smartsensingme/kalman-filter-c.git
-[submodule "components/as5600"]
-	path = components/as5600
-	url = https://github.com/smartsensingme/as5600-esp-idf-component.git
 [submodule "components/esp-engine-driver"]
 	path = components/esp-engine-driver
 	url = https://github.com/smartsensingme/esp-engine-driver-.git
+[submodule "components/esp-mt6701"]
+	path = components/esp-mt6701
+	url = https://github.com/smartsensingme/esp-mt6701.git

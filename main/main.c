@@ -1,4 +1,4 @@
-#include "as5600.h"
+#include "mt6701.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "engine_driver.h"
@@ -10,8 +10,6 @@
 #include <stdio.h>
 
 #define I2C_PORT_NUM I2C_NUM_0
-#define AS5600_DIR_PIN                                                         \
-  GPIO_NUM_4 // Pino para controle de direção (DIR) do AS5600
 
 static const char *TAG = "APP_MAIN";
 
@@ -93,9 +91,9 @@ static void engine_angle_kalman_3d_update(struct kalman_3d *k,
   k->P[2][2] = P_pred_22 - K_2 * P_pred_02;
 }
 
-// Convert 12-bit register value (0..4095) to float degrees (0.0..359.9)
+// Convert 14-bit register value (0..16383) to float degrees (0.0..359.9)
 static float raw_to_degrees(uint16_t raw) {
-  return ((float)raw * 360.0f) / 4096.0f;
+  return ((float)raw * 360.0f) / 16384.0f;
 }
 
 // Static configuration for H-Bridge engine driver using Kconfig settings
@@ -104,30 +102,9 @@ static struct engine_config motor = {
     .pin_rev = CONFIG_ENGINE_PIN_LPWM,
     .pin_enable = CONFIG_ENGINE_PIN_ENABLE,
     .pwm_freq_hz = CONFIG_ENGINE_PWM_FREQ_HZ,
-};
-
-void app_main(void) {
-  // Configuração do pino DIR do AS5600 (GPIO 4) para nível lógico HIGH (3.3V)
-  // Isso atende ao requisito de manter o pino DIR em nível alto (sinal de 5V ou
-  // compatível) para definir a direção.
-  ESP_LOGI(
-      TAG,
-      "Configurando GPIO %d como saída em nível HIGH para o DIR do AS5600...",
-      AS5600_DIR_PIN);
-  gpio_config_t io_conf = {
-      .pin_bit_mask = (1ULL << AS5600_DIR_PIN),
-      .mode = GPIO_MODE_OUTPUT,
-      .pull_up_en = GPIO_PULLUP_DISABLE,
-      .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_DISABLE,
-  };
-  ESP_ERROR_CHECK(gpio_config(&io_conf));
-  ESP_ERROR_CHECK(gpio_set_level(AS5600_DIR_PIN, 1));
-  ESP_LOGI(TAG, "GPIO %d configurado com sucesso e definido como HIGH",
-           AS5600_DIR_PIN);
-
-  ESP_LOGI(TAG, "AS5600 Magnetic Encoder Demonstration - High Speed Raw "
-                "Sampling & 3D Kalman Filter (ESP-IDF v6)");
+};void app_main(void) {
+  ESP_LOGI(TAG, "MT6701 Magnetic Encoder Demonstration - High Speed Raw "
+                "Sampling, Multi-Turn, Velocity & 3D Kalman Filter (ESP-IDF v6)");
 
   // Initialize H-Bridge Engine Driver
   ESP_LOGI(TAG, "Initializing H-Bridge motor driver...");
@@ -151,34 +128,32 @@ void app_main(void) {
   i2c_master_bus_handle_t bus_handle;
   ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &bus_handle));
 
-  // 2. Add AS5600 Device to the I2C Master Bus
+  // 2. Add MT6701 Device to the I2C Master Bus
   i2c_device_config_t dev_config = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-      .device_address = AS5600_I2C_ADDRESS,
+      .device_address = MT6701_I2C_ADDRESS,
       .scl_speed_hz = 400000,
   };
   i2c_master_dev_handle_t i2c_dev;
   ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &dev_config, &i2c_dev));
 
-  // 3. Initialize AS5600 driver
-  as5600_config_t as5600_cfg = {
-      .hysteresis = 0,            // 0 LSB
-      .slow_filter = 2,           // 2x slow filter
-      .fast_filter_threshold = 2, // 2 LSB fast filter threshold
-  };
-  as5600_dev_t as5600_dev;
-  esp_err_t err = as5600_init(&as5600_dev, i2c_dev, &as5600_cfg);
+  // 3. Initialize MT6701 driver
+  mt6701_dev_t mt6701_dev;
+  esp_err_t err = mt6701_init(&mt6701_dev, i2c_dev);
   if (err != ESP_OK) {
-    ESP_LOGE(TAG, "AS5600 Driver Init failed: %s", esp_err_to_name(err));
+    ESP_LOGE(TAG, "MT6701 Driver Init failed: %s", esp_err_to_name(err));
     return;
   }
+
+  // Set software configs if needed (defaults to offset 0 and CW direction)
+  mt6701_set_software_direction(&mt6701_dev, MT6701_DIR_CW);
 
   // 4. Initialize Kalman Filter 3D
   struct kalman_3d filter;
   uint16_t initial_raw_angle = 0;
   float initial_deg = 0.0f;
 
-  if (as5600_read_raw_angle(&as5600_dev, &initial_raw_angle) == ESP_OK) {
+  if (mt6701_read_raw_angle(&mt6701_dev, &initial_raw_angle) == ESP_OK) {
     initial_deg = raw_to_degrees(initial_raw_angle);
     ESP_LOGI(TAG, "Initial raw angle: %.3f deg", initial_deg);
   } else {
@@ -188,39 +163,19 @@ void app_main(void) {
   }
 
   /*
-   * Configuração customizada para o Filtro de Kalman 3D:
-   *
-   * - q_theta (Covariância do ruído do processo para posição/ângulo):
-   *   Valores menores fazem o filtro confiar mais no modelo físico (mais suave,
-   * mas com maior atraso/lag). Valores maiores fazem o filtro confiar mais nas
-   * medições (mais responsivo, mas com mais ruído/jitter). Valor padrão:
-   * 0.001f.
-   *
-   * - q_omega (Covariância do ruído do processo para velocidade angular):
-   *   Determina quão rápido o filtro reage a mudanças na velocidade angular.
-   *   Valores maiores permitem adaptação mais rápida a
-   * acelerações/desacelerações repentinas. Valor padrão: 10.0f.
-   *
-   * - q_alpha (Covariância do ruído do processo para aceleração angular):
-   *   Determina a velocidade com que o filtro rastreia mudanças na aceleração.
-   *   Valor padrão: 100.0f.
+   * Configuração customizada para o Filtro de Kalman 3D adaptada para o MT6701:
    *
    * - r (Covariância do ruído de medição):
-   *   Representa o nível de ruído/variância nas leituras brutas do sensor
-   * AS5600. Um valor maior indica que o sensor é mais ruidoso, fazendo o filtro
-   * suavizar mais os dados. Valor padrão: 0.018f.
-   *
-   * Guia de Ajuste (Tuning):
-   * 1. Se o ângulo filtrado apresentar atraso (lag) durante a rotação física,
-   * aumente q_theta, q_omega e q_alpha.
-   * 2. Se o ângulo filtrado oscilar muito (ruído/jitter) quando o sensor
-   * estiver parado ou em movimento lento, diminua q_theta/q_omega ou aumente r.
+   *   O MT6701 possui ruído de transição RMS típico de 0.01° (conforme datasheet),
+   *   sendo cerca de 10x mais preciso e menos ruidoso que o AS5600.
+   *   Ajustamos r para 0.0004f (equivalente a uma desviação padrão de 0.02°),
+   *   fazendo o filtro confiar muito mais na medição direta e diminuindo o lag.
    */
   kalman_3d_config_t filter_cfg = {
       .q_theta = 0.001f,
       .q_omega = 10.0f,
       .q_alpha = 100.0f,
-      .r = 0.018f,
+      .r = 0.0004f,
   };
 
   kalman_3d_init(&filter, initial_deg, &filter_cfg);
@@ -230,19 +185,15 @@ void app_main(void) {
   int64_t last_time = esp_timer_get_time();
 
   while (1) {
-    uint16_t raw_val = 0;
-
-    // Calcula o dt real entre duas amostragens. Você tem que garantir que esse
-    // dt é bem conhecido para o filtro de Kalman funcionar corretamente.
+    // Calcula o dt real entre duas amostragens.
     int64_t now = esp_timer_get_time();
     float dt = (float)(now - last_time) /
                1000000.0f; // Convert microseconds to seconds
     last_time = now;
 
-    // Fetch RAW ANGLE at 1 kHz (every 1 ms)
-    // Only 2 bytes read, maximizes rate and avoids auto-increment bug on other
-    // registers
-    if (as5600_read_raw_angle(&as5600_dev, &raw_val) == ESP_OK) {
+    // Fetch RAW ANGLE at 1 kHz (every 1 ms) and update software tracking
+    if (mt6701_update(&mt6701_dev) == ESP_OK) {
+      uint16_t raw_val = mt6701_dev.last_raw_angle;
       float raw_deg = raw_to_degrees(raw_val);
       // Pass the measured dt to the Kalman filter
       if (dt > 0.0f &&
@@ -252,23 +203,19 @@ void app_main(void) {
       }
     }
 
-    // Print sensor status every 2 seconds (2000 ticks of 1 ms)
+    // Print software turns and velocity every 2 seconds (2000 ticks of 1 ms)
     if (loop_count % 2000 == 0) {
-      uint8_t status = 0;
-      if (as5600_read_status(&as5600_dev, &status) == ESP_OK) {
-        bool md = (status & AS5600_STATUS_MD) != 0;
-        bool ml = (status & AS5600_STATUS_ML) != 0;
-        bool mh = (status & AS5600_STATUS_MH) != 0;
-        printf("[AS5600 Status] Byte: 0x%02X | Magnet: %s | Strength: %s\n",
-               status, md ? "DETECTED" : "NOT DETECTED",
-               ml ? "TOO WEAK" : (mh ? "TOO STRONG" : "OK"));
-      } else {
-        printf("[AS5600 Status] Failed to read status\n");
-      }
+      int32_t turns = 0;
+      float velocity = 0.0f;
+      mt6701_get_total_turns(&mt6701_dev, &turns);
+      mt6701_get_velocity(&mt6701_dev, &velocity);
+      printf("[MT6701 State] Total Turns: %ld | Filtered Velocity: %.3f rad/s\n",
+             turns, velocity);
     }
 
     // Print estimated state variables every 200 ms (200 ticks of 1 ms)
     if (loop_count % 200 == 0) {
+      uint16_t raw_val = mt6701_dev.last_raw_angle;
       float raw_deg = raw_to_degrees(raw_val);
       float est_angle = filter.x[0];
       float est_speed_dps = filter.x[1];

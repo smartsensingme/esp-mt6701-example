@@ -1,8 +1,8 @@
-# AS5600 Magnetic Encoder, Motor H-Bridge Control & Kalman Filter - ESP-IDF v6
+# MT6701 Magnetic Encoder, Motor H-Bridge Control & Kalman Filter - ESP-IDF v6
 
 *Read in other languages: [Português](README.pt-br.md)*
 
-This repository contains the demonstration of the integration of the **AS5600** magnetic encoder and the **BTS7960 (IBT-2)** H-bridge motor driver with **ESP-IDF v6**, utilizing standalone, reusable ESP-IDF components and an advanced **3D Kalman Filter** to estimate the position, speed (RPM), and acceleration (RPM/s) of a rotating shaft in real time.
+This repository contains the demonstration of the integration of the **MT6701** 14-bit magnetic encoder and the **BTS7960 (IBT-2)** H-bridge motor driver with **ESP-IDF v6**, utilizing standalone, reusable ESP-IDF components and an advanced **3D Kalman Filter** to estimate the position, speed (RPM), and acceleration (RPM/s) of a rotating shaft in real time.
 
 The project is configured to run on the **ESP32-S3** microcontroller and consumes its external dependencies through Git submodules.
 
@@ -11,10 +11,10 @@ The project is configured to run on the **ESP32-S3** microcontroller and consume
 ## 🛠️ Project Architecture
 
 The workspace is organized as follows:
-- **`components/as5600`**: Git submodule for the AS5600 magnetic encoder driver, utilizing the modern ESP-IDF master I2C driver (`driver/i2c_master.h`).
+- **`components/esp-mt6701`**: Git submodule for the MT6701 14-bit magnetic encoder driver, utilizing the modern ESP-IDF master I2C driver (`driver/i2c_master.h`) and optimized to run strictly in read-only mode (software-driven offset and direction).
 - **`components/esp-engine-driver`**: Git submodule for the BTS7960 dual PWM H-bridge motor driver, utilizing the ESP32-S3's native high-performance **MCPWM** peripheral.
 - **`components/kalman-filter-c`**: Git submodule pointing to the pure C Kalman Filter library.
-- **`main/`**: Application code that initializes the I2C master bus, configures the AS5600 sensor, initializes the motor driver (setting a constant 50% Forward PWM test speed), and runs the 1 kHz estimation loop.
+- **`main/`**: Application code that initializes the I2C master bus, configures the MT6701 sensor, initializes the motor driver (setting a constant 50% Forward PWM test speed), and runs the 1 kHz estimation loop.
 
 ---
 
@@ -22,7 +22,7 @@ The workspace is organized as follows:
 
 ### Thread Safety (Component Configs)
 Both drivers include Kconfig flags to toggle FreeRTOS Mutex synchronization at compile time:
-*   **`CONFIG_AS5600_THREAD_SAFE`** (Default: `y`): Synchronizes I2C master register accesses.
+*   **`CONFIG_MT6701_THREAD_SAFE`** (Default: `y`): Synchronizes I2C master register accesses.
 *   **`CONFIG_ENGINE_THREAD_SAFE`** (Default: `y`): Synchronizes H-bridge speed adjustment updates.
 *   *Note:* If unchecked, all mutex instructions are compiled out to provide lock-free, zero-overhead execution for maximum performance.
 
@@ -42,16 +42,15 @@ Exposes physical configuration settings for the BTS7960:
 
 ## ⚡ High-Speed Optimizations & Timing Accuracy
 
-To support high rotational speeds (such as 900 RPM or more) and ensure maximum estimation precision, the firmware implements the following optimized behaviors:
+To support high rotational speeds (such as 30,000 RPM or more) and ensure maximum estimation precision, the firmware implements the following optimized behaviors:
 
-### 1. Dedicated DIR Pin Control
-*   **GPIO 4** is configured as an output driven **HIGH** to set the hardware `DIR` (direction) of the AS5600, determining the counting direction (CW/CCW).
+### 1. Software-Driven Zero & Direction Calibration
+*   Instead of burning configurations to the MT6701's hardware EEPROM (which requires a 5V VDD supply and introduces write blocking delays), calibration offsets and rotation direction CCW/CW are processed mathematically in software. 
+*   This makes the I2C interface **read-only** during execution, ensuring compatibility with 3.3V power rails and zero risk of settings corruption.
 
-### 2. High-Speed 2-Byte I2C Reads
-*   Instead of a heavy 5-byte burst read of STATUS, RAW ANGLE, and ANGLE registers in every loop, the main 1 kHz execution loop performs a minimal **2-byte I2C read** of only the `RAW ANGLE` register (`0x0C`).
-*   The `STATUS` register (`0x0B`) is only queried once every 2 seconds (during logging).
-*   This reduces the I2C transaction duration to just **~120 µs** (at 400 kHz clock), enabling a theoretical maximum sampling rate of **~8.33 kHz**.
-*   This also avoids any register address auto-increment suppression bugs present on the AS5600 hardware.
+### 2. High-Speed 2-Byte I2C Burst Reads
+*   To minimize bus transaction time, the main 1 kHz execution loop performs a single, continuous **2-byte I2C read** of registers `0x03` and `0x04` to retrieve the full 14-bit angle.
+*   This reduces the I2C transaction duration to just **~73 µs** (at 400 kHz clock) or **~29 µs** (at 1 MHz clock), enabling extremely high sampling rates.
 
 ### 3. Dynamic Time Delta (`dt`) Measurement
 *   Instead of assuming a hardcoded cycle time of `0.001s` (1 ms), the loop measures the exact time elapsed since the last iteration using **`esp_timer_get_time()`**.
@@ -67,6 +66,9 @@ The project integrates the pure C Kalman Filter library from [kalman-filter-c](h
 ### Angular Transition Correction (Wrap-around)
 Due to the circular behavior of the encoder ($0^\circ \to 360^\circ$), the main loop ([main.c](main/main.c)) implements the specialized function `engine_angle_kalman_3d_update` to normalize the measurement error (innovation) to the range of $[-180^\circ, 180^\circ]$ to prevent false spikes when transitioning the physical boundary.
 
+### High-Precision MT6701 Tuning
+The measurement noise covariance `.r` parameter in the Kalman Filter config is tuned to **`0.0004f`** (equivalent to a standard deviation of $0.02^\circ$), matching the low transition noise ($0.01^\circ$ RMS typical) of the MT6701. This allows the filter to trust sensor measurements significantly more than it would with an AS5600, minimizing lagging issues while providing smooth velocity outputs.
+
 ---
 
 ## 🚀 How to Compile and Run
@@ -74,7 +76,7 @@ Due to the circular behavior of the encoder ($0^\circ \to 360^\circ$), the main 
 1.  **Clone the project and its dependencies:**
     This repository uses Git submodules. Clone it recursively:
     ```bash
-    git clone --recursive git@github-ssme:smartsensingme/as5600-sensor-esp-idf.git
+    git clone --recursive git@github-ssme:smartsensingme/esp-mt6701-example-esp-idf.git
     ```
     If you have already cloned the project without submodules, fetch the dependencies by running:
     ```bash
@@ -109,9 +111,9 @@ Due to the circular behavior of the encoder ($0^\circ \to 360^\circ$), the main 
 ## 📦 How to Reuse these Drivers in Another Project
 
 Since the drivers were developed as clean, decoupled ESP-IDF components, you can add them directly to another project:
-1. Add the AS5600 driver:
+1. Add the MT6701 driver:
    ```bash
-   git submodule add git@github-ssme:smartsensingme/as5600-esp-idf-component.git components/as5600
+   git submodule add https://github.com/smartsensingme/esp-mt6701.git components/esp-mt6701
    ```
 2. Add the H-Bridge engine driver:
    ```bash
@@ -119,7 +121,7 @@ Since the drivers were developed as clean, decoupled ESP-IDF components, you can
    ```
 3. Include them in your application code:
    ```c
-   #include "as5600.h"
+   #include "mt6701.h"
    #include "engine_driver.h"
    ```
 4. All configurations (pins, frequency, thread-safety) will automatically show up in your project's `menuconfig`!

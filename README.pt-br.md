@@ -1,8 +1,8 @@
-# Sensor Magnético AS5600, Controle de Motor por Ponte H & Filtro de Kalman - ESP-IDF v6
+# Sensor Magnético MT6701, Controle de Motor por Ponte H & Filtro de Kalman - ESP-IDF v6
 
 *Read in other languages: [English](README.md)*
 
-Este repositório contém a demonstração da integração do encoder magnético **AS5600** e do driver de motor por ponte H **BTS7960 (IBT-2)** com o **ESP-IDF v6**, utilizando componentes nativos e reutilizáveis para ESP-IDF, e um **Filtro de Kalman 3D** avançado para estimar a posição, velocidade (RPM) e aceleração (RPM/s) de um eixo giratório em tempo real.
+Este repositório contém a demonstração da integração do encoder magnético **MT6701** de 14 bits e do driver de motor por ponte H **BTS7960 (IBT-2)** com o **ESP-IDF v6**, utilizando componentes nativos e reutilizáveis para ESP-IDF, e um **Filtro de Kalman 3D** avançado para estimar a posição, velocidade (RPM) e aceleração (RPM/s) de um eixo giratório em tempo real.
 
 O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consome suas dependências externas através de submódulos do Git.
 
@@ -11,10 +11,10 @@ O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consom
 ## 🛠️ Arquitetura do Projeto
 
 O espaço de trabalho está estruturado da seguinte forma:
-- **`components/as5600`**: Submódulo Git para o driver do sensor AS5600, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`).
+- **`components/esp-mt6701`**: Submódulo Git para o driver do sensor MT6701, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`) e otimizado para rodar estritamente como somente leitura (calibrações de offset e direção resolvidas em software).
 - **`components/esp-engine-driver`**: Submódulo Git para o driver de motor por ponte H BTS7960, utilizando o periférico de alta performance **MCPWM** nativo do ESP32-S3.
 - **`components/kalman-filter-c`**: Submódulo Git apontando para a biblioteca pura em C do Filtro de Kalman.
-- **`main/`**: Código da aplicação que inicializa o barramento I2C, configura o sensor AS5600, inicializa o driver da ponte H (aplicando 50% de PWM Horário para teste) e executa o loop de estimativa a 1 kHz.
+- **`main/`**: Código da aplicação que inicializa o barramento I2C, configura o sensor MT6701, inicializa o driver da ponte H (aplicando 50% de PWM Horário para teste) e executa o loop de estimativa a 1 kHz.
 
 ---
 
@@ -22,7 +22,7 @@ O espaço de trabalho está estruturado da seguinte forma:
 
 ### Segurança de Threads (Configurações dos Componentes)
 Ambos os drivers incluem flags do Kconfig para alternar a sincronização por Mutex do FreeRTOS em tempo de compilação:
-*   **`CONFIG_AS5600_THREAD_SAFE`** (Padrão: `y`): Sincroniza os acessos aos registradores via barramento I2C.
+*   **`CONFIG_MT6701_THREAD_SAFE`** (Padrão: `y`): Sincroniza os acessos aos registradores via barramento I2C.
 *   **`CONFIG_ENGINE_THREAD_SAFE`** (Padrão: `y`): Sincroniza a rotina de escrita de velocidade do motor.
 *   *Nota:* Se desmarcados, todas as operações de mutex correspondentes são compiladas fora para fornecer transações livres de travas (lock-free) e com overhead zero.
 
@@ -42,16 +42,15 @@ Expõe as seguintes opções no Kconfig para controle do BTS7960:
 
 ## ⚡ Otimizações de Alta Velocidade & Precisão de Tempo
 
-Para suportar altas velocidades de rotação (como 900 RPM ou mais) e garantir a máxima precisão de estimativa, o firmware implementa os seguintes comportamentos otimizados:
+Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garantir a máxima precisão de estimativa, o firmware implementa os seguintes comportamentos otimizados:
 
-### 1. Controle Dedicado do Pino DIR
-*   A **GPIO 4** é configurada como saída e definida em **HIGH** para fixar o pino físico `DIR` (direção) do AS5600, definindo o sentido de contagem (Horário/Anti-horário).
+### 1. Calibração de Direção e Zero por Software
+*   Em vez de gravar configurações na EEPROM física do MT6701 (que requer alimentação de 5.0V VDD e introduz delays longos de travamento de escrita), os offsets de calibração de zero e a direção lógica CW/CCW são calculados matematicamente em software.
+*   Isso torna a interface I2C **somente leitura** durante o funcionamento do sistema, assegurando compatibilidade com tensões de 3.3V no barramento e eliminando riscos de corromper a EEPROM física.
 
-### 2. Leitura I2C de Alta Velocidade (2 Bytes)
-*   Em vez de realizar uma leitura em lote pesada de 5 bytes (STATUS, RAW ANGLE e ANGLE) a cada ciclo, o loop principal a 1 kHz executa uma leitura mínima de **2 bytes** apenas para o registrador `RAW ANGLE` (`0x0C`).
-*   O registrador de `STATUS` (`0x0B`) é lido apenas uma vez a cada 2 segundos (durante o log).
-*   Isso reduz a duração da transação I2C para apenas **~120 µs** (com clock de 400 kHz), permitindo uma taxa de amostragem máxima teórica de **~8,33 kHz**.
-*   Essa abordagem também evita o bug de supressão de auto-incremento de registrador presente no hardware do AS5600.
+### 2. Leitura I2C de Alta Velocidade (2 Bytes em Burst)
+*   Para reduzir ao mínimo a transação no barramento, o loop principal a 1 kHz executa uma única leitura em lote de **2 bytes** para obter o ângulo completo de 14 bits dos registradores `0x03` e `0x04`.
+*   Isso reduz a duração da transação I2C para apenas **~73 µs** (com clock de 400 kHz) ou **~29 µs** (com clock de 1 MHz), permitindo taxas de amostragem extremamente altas.
 
 ### 3. Medição Dinâmica do Delta de Tempo (`dt`)
 *   Em vez de assumir um tempo de ciclo fixo e ideal de `0.001s` (1 ms), o loop mede o tempo real decorrido entre as iterações usando a função **`esp_timer_get_time()`**.
@@ -67,6 +66,9 @@ O projeto integra a biblioteca pura em C do Filtro de Kalman de [kalman-filter-c
 ### Correção de Transição Angular (Wrap-around)
 Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o loop principal ([main.c](main/main.c)) implementa a função especializada `engine_angle_kalman_3d_update` para normalizar o erro de medição (inovação) no intervalo de $[-180^\circ, 180^\circ]$ a fim de evitar picos falsos ao cruzar a borda física.
 
+### Ajuste de Alta Precisão para o MT6701
+A covariância do ruído de medição `.r` no Filtro de Kalman foi ajustada para **`0.0004f`** (desvio padrão de $0.02^\circ$). Como o MT6701 possui um ruído de transição típico baixíssimo de apenas $0.01^\circ$ RMS, essa sintonia faz o filtro confiar de forma muito mais agressiva no sensor (comparado ao ruído do AS5600), minimizando atrasos de fase e entregando velocidades dinâmicas muito mais realistas.
+
 ---
 
 ## 🚀 Como Compilar e Executar
@@ -74,7 +76,7 @@ Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o loop pr
 1.  **Clone o projeto e suas dependências:**
     Este repositório utiliza submódulos do Git. Clone de forma recursiva:
     ```bash
-    git clone --recursive git@github-ssme:smartsensingme/as5600-sensor-esp-idf.git
+    git clone --recursive git@github-ssme:smartsensingme/esp-mt6701-example-esp-idf.git
     ```
     Se você já clonou o projeto sem os submódulos, baixe as dependências executando:
     ```bash
@@ -109,9 +111,9 @@ Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o loop pr
 ## 📦 Como Reutilizar estes Drivers em Outro Projeto
 
 Como os drivers foram desenvolvidos como componentes ESP-IDF limpos e desacoplados, você pode adicioná-los diretamente a outro projeto:
-1. Adicione o driver do sensor AS5600:
+1. Adicione o driver do sensor MT6701:
    ```bash
-   git submodule add git@github-ssme:smartsensingme/as5600-esp-idf-component.git components/as5600
+   git submodule add https://github.com/smartsensingme/esp-mt6701.git components/esp-mt6701
    ```
 2. Adicione o driver do motor:
    ```bash
@@ -119,7 +121,7 @@ Como os drivers foram desenvolvidos como componentes ESP-IDF limpos e desacoplad
    ```
 3. No código da sua aplicação, inclua-os:
    ```c
-   #include "as5600.h"
+   #include "mt6701.h"
    #include "engine_driver.h"
    ```
 4. As configurações dos componentes aparecerão automaticamente no `menuconfig` do seu novo projeto!
@@ -133,7 +135,7 @@ Este projeto é parte do ecossistema **SmartSensing.me**. Aplicamos fundamentos 
 
 Diferente de conteúdos superficiais ou clickbaits, este repositório oferece:
 - **Originalidade:** Implementações únicas baseadas em quase 30 anos de experiência acadêmica.
-- **Profundidade Técnica:** Uso profissional do framework ESP-IDF e FreeRTOS.
+- **Profundidade Técnico:** Uso profissional do framework ESP-IDF e FreeRTOS.
 - **Pedagogia:** Código documentado e estruturado para quem busca crescimento técnico genuíno.
 
 > "Transformamos sinais do mundo físico em inteligência digital, sem atalhos."
@@ -155,4 +157,4 @@ Engenheiro Eletricista com quase três décadas de experiência na docência de 
 
 ## 📄 Licença
 
-Este projeto está licenciado sob a Licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
+Este projeto é licensed sob a Licença MIT. Veja o arquivo [LICENSE](LICENSE) para detalhes.
