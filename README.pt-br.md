@@ -64,7 +64,7 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 O projeto integra a biblioteca pura em C do Filtro de Kalman de [kalman-filter-c](https://github.com/smartsensingme/kalman-filter-c.git) para estimar posição ($\theta$), velocidade ($\omega$) e aceleração ($\alpha$).
 
 ### Correção de Transição Angular (Wrap-around)
-Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o loop principal ([main.c](main/main.c)) implementa a função especializada `engine_angle_kalman_3d_update` para normalizar o erro de medição (inovação) no intervalo de $[-180^\circ, 180^\circ]$ a fim de evitar picos falsos ao cruzar a borda física.
+Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o módulo [engine_angle_kalman.c](main/engine_angle_kalman.c) implementa a função especializada `engine_angle_kalman_3d_update` para normalizar o erro de medição (inovação) no intervalo de $[-180^\circ, 180^\circ]$ a fim de evitar picos falsos ao cruzar a borda física.
 
 ### Ajuste de Alta Precisão para o MT6701
 A covariância do ruído de medição `.r` no Filtro de Kalman foi ajustada para **`0.0004f`** (desvio padrão de $0.02^\circ$). Como o MT6701 possui um ruído de transição típico baixíssimo de apenas $0.01^\circ$ RMS, essa sintonia faz o filtro confiar de forma muito mais agressiva no sensor (comparado ao ruído do AS5600), minimizando atrasos de fase e entregando velocidades dinâmicas muito mais realistas.
