@@ -14,7 +14,7 @@ O espaço de trabalho está estruturado da seguinte forma:
 - **`components/esp-mt6701`**: Submódulo Git para o driver do sensor MT6701, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`) e otimizado para rodar estritamente como somente leitura (calibrações de offset e direção resolvidas em software).
 - **`components/esp-engine-driver`**: Submódulo Git para o driver de motor por ponte H BTS7960, utilizando o periférico de alta performance **MCPWM** nativo do ESP32-S3.
 - **`components/kalman-filter-c`**: Submódulo Git apontando para a biblioteca pura em C do Filtro de Kalman.
-- **`main/`**: Código da aplicação que inicializa o barramento I2C, configura o sensor MT6701, inicializa o driver da ponte H (aplicando 50% de PWM Horário para teste) e executa o loop de estimativa a 1 kHz.
+- **`main/`**: Aplicação em tempo real que lê o MT6701 e atualiza o Kalman a **4 kHz**, executa um controlador provisório a **1 kHz**, comanda a ponte H e publica telemetria a cada 5 segundos.
 
 ---
 
@@ -25,6 +25,7 @@ Ambos os drivers incluem flags do Kconfig para alternar a sincronização por Mu
 *   **`CONFIG_MT6701_THREAD_SAFE`** (Padrão: `y`): Sincroniza os acessos aos registradores via barramento I2C.
 *   **`CONFIG_ENGINE_THREAD_SAFE`** (Padrão: `y`): Sincroniza a rotina de escrita de velocidade do motor.
 *   *Nota:* Se desmarcados, todas as operações de mutex correspondentes são compiladas fora para fornecer transações livres de travas (lock-free) e com overhead zero.
+*   Nesta aplicação, o `sdkconfig.defaults` desativa ambos os mutexes porque, após a inicialização, somente a tarefa de tempo real no Core 1 acessa o sensor e comanda o motor.
 
 ### Configuração de Pinos GPIO I2C (Configuração da Aplicação)
 Configurável diretamente via `menuconfig`. Padrões:
@@ -49,13 +50,31 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 *   Isso torna a interface I2C **somente leitura** durante o funcionamento do sistema, assegurando compatibilidade com tensões de 3.3V no barramento e eliminando riscos de corromper a EEPROM física.
 
 ### 2. Leitura I2C de Alta Velocidade (2 Bytes em Burst)
-*   Para reduzir ao mínimo a transação no barramento, o loop principal a 1 kHz executa uma única leitura em lote de **2 bytes** para obter o ângulo completo de 14 bits dos registradores `0x03` e `0x04`.
-*   Isso reduz a duração da transação I2C para apenas **~73 µs** (com clock de 400 kHz) ou **~29 µs** (com clock de 1 MHz), permitindo taxas de amostragem extremamente altas.
+*   Para reduzir ao mínimo a transação no barramento, a tarefa de estimação a 4 kHz executa uma única leitura em lote de **2 bytes** para obter o ângulo completo de 14 bits dos registradores `0x03` e `0x04`.
+*   A transação combinada requer aproximadamente 45 pulsos de SCL, correspondendo a um mínimo teórico de **~112,5 µs** com clock de 400 kHz.
 
 ### 3. Medição Dinâmica do Delta de Tempo (`dt`)
-*   Em vez de assumir um tempo de ciclo fixo e ideal de `0.001s` (1 ms), o loop mede o tempo real decorrido entre as iterações usando a função **`esp_timer_get_time()`**.
+*   Em vez de assumir um período ideal de `0.00025s` (250 µs), a tarefa mede o tempo real entre amostras usando **`esp_timer_get_time()`**.
 *   Esse delta de tempo real (`dt`) é passado diretamente para o Filtro de Kalman.
-*   Isso garante uma estimativa de velocidade (RPM) e aceleração (RPM/s) 100% precisa, compensando integralmente jitters do scheduler, preempção de tarefas e latências do barramento I2C.
+*   Isso reduz o erro causado por jitter do scheduler, preempção de tarefas e latência do barramento I2C.
+
+### 4. Agendamento em Duas Taxas
+*   Um **GPTimer** gera uma interrupção a cada 250 µs. A ISR apenas envia uma notificação direta para a tarefa de tempo real; nenhuma transação I2C ou operação do Kalman é executada dentro da interrupção.
+*   O MT6701 e o estado completo do Kalman (posição, velocidade e aceleração) são atualizados a **4 kHz**.
+*   A cada quatro amostras, o controlador provisório aplica um comando fixo de **50%** à ponte H, resultando em uma taxa de controle de **1 kHz**. A interface já recebe velocidade e `dt` para sua futura substituição pelo PID.
+*   Uma tarefa de baixa prioridade no Core 0 recebe telemetria a cada **5 segundos**. Para medir o efeito da própria saída serial, ela imprime uma janela silenciosa e descarta sem imprimir a janela seguinte, contaminada pela impressão anterior. O resultado é um relatório confiável a cada **10 segundos**. Nenhuma formatação ou impressão ocorre no Core 1 depois que o GPTimer é iniciado.
+
+### 5. Isolamento do Loop de Tempo Real
+*   A tarefa completa de aquisição, estimação e controle é criada com `xTaskCreatePinnedToCore()` no **Core 1**, usando a prioridade `configMAX_PRIORITIES - 1`.
+*   O barramento I2C, o MT6701 e o GPTimer são inicializados dentro dessa própria tarefa. Assim, as interrupções dos periféricos são alocadas a partir do Core 1, evitando migração da tarefa e cruzamentos de núcleo no caminho crítico.
+*   A tarefa `app_main`, os serviços de `esp_timer` e a tarefa de telemetria permanecem no **Core 0**.
+*   O ESP32-S3 opera a **240 MHz**, o firmware é compilado com otimização de desempenho e os mutexes dos drivers são removidos porque os periféricos possuem um único proprietário.
+*   O tick do FreeRTOS permanece em **1 kHz**: a temporização de 4 kHz vem do GPTimer e não exige elevar a frequência global do escalonador.
+
+### 6. Diagnóstico Temporal por Janela
+*   A telemetria é copiada para o Core 0 somente uma vez a cada 5 segundos, em vez de atualizar uma fila a cada ciclo de controle. Somente as janelas que não contêm impressão de logs são exibidas.
+*   Cada janela informa taxas efetivas, notificações perdidas, erros I2C, violações do deadline de 250 µs e mínimos/máximos de `dt`.
+*   Os máximos de latência de despertar, transação I2C, Kalman, controle e processamento total são reiniciados em cada janela. Um máximo vitalício separado é mantido apenas como referência.
 
 ---
 
