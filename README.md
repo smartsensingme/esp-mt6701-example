@@ -31,6 +31,7 @@ Both drivers include Kconfig flags to toggle FreeRTOS Mutex synchronization at c
 Directly configurable in `menuconfig`. Defaults:
 *   **`CONFIG_APP_I2C_SDA_PIN`** (Default: `8`)
 *   **`CONFIG_APP_I2C_SCL_PIN`** (Default: `9`)
+*   **`CONFIG_APP_I2C_CLOCK_HZ`** (Default: `1000000`): MT6701 clock, configurable from 100 kHz to 1 MHz.
 
 ### H-Bridge MCPWM Configuration (Component Config)
 Exposes physical configuration settings for the BTS7960:
@@ -51,7 +52,8 @@ To support high rotational speeds (such as 30,000 RPM or more) and ensure maximu
 
 ### 2. High-Speed 2-Byte I2C Burst Reads
 *   To minimize bus transaction time, the 4 kHz estimator task performs a single, continuous **2-byte I2C read** of registers `0x03` and `0x04` to retrieve the full 14-bit angle.
-*   The combined transaction requires approximately 45 SCL pulses, corresponding to a theoretical minimum of **~112.5 µs** at a 400 kHz clock.
+*   The combined transaction requires approximately 45 SCL pulses, corresponding to a theoretical minimum of **~45 µs** at a 1 MHz clock.
+*   The datasheet specifies a 1 µs minimum SCL period, allowing 1 MHz, provided SDA/SCL rise and fall times remain below 150 ns. Suitable external pull-ups and short connections are recommended; 400 kHz remains available as a conservative `menuconfig` fallback.
 
 ### 3. Dynamic Time Delta (`dt`) Measurement
 *   Instead of assuming an ideal `0.00025s` (250 µs) period, the task measures the actual time between samples using **`esp_timer_get_time()`**.

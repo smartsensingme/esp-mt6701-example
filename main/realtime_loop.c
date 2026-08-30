@@ -19,7 +19,6 @@
 #define CONTROL_CORE_ID 1
 #define HOUSEKEEPING_CORE_ID 0
 #define I2C_PORT_NUM I2C_NUM_0
-#define I2C_CLOCK_HZ 400000U
 #define TIMER_RESOLUTION_HZ 1000000U
 #define SENSOR_PERIOD_US (TIMER_RESOLUTION_HZ / REALTIME_SENSOR_RATE_HZ)
 #define CONTROL_DIVIDER (REALTIME_SENSOR_RATE_HZ / REALTIME_CONTROL_RATE_HZ)
@@ -161,7 +160,7 @@ static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
   i2c_device_config_t device_config = {
       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
       .device_address = MT6701_I2C_ADDRESS,
-      .scl_speed_hz = I2C_CLOCK_HZ,
+      .scl_speed_hz = CONFIG_APP_I2C_CLOCK_HZ,
   };
   ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(context->i2c_bus,
                                                 &device_config,
@@ -345,7 +344,8 @@ static void realtime_task(void *argument) {
            "Control on Core %d: sensor/Kalman=%u Hz control=%u Hz "
            "I2C=%u Hz initial=%.3f deg dummy=%.1f%%",
            xPortGetCoreID(), REALTIME_SENSOR_RATE_HZ, REALTIME_CONTROL_RATE_HZ,
-           I2C_CLOCK_HZ, measured_angle_deg, DUMMY_MOTOR_OUTPUT_PERCENT);
+           CONFIG_APP_I2C_CLOCK_HZ, measured_angle_deg,
+           DUMMY_MOTOR_OUTPUT_PERCENT);
 
   gptimer_handle_t sampling_timer = NULL;
   err = start_sampling_timer(xTaskGetCurrentTaskHandle(), &sampling_timer);

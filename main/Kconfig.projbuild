@@ -12,4 +12,13 @@ menu "Application I2C Configurations"
         help
             GPIO pin used for I2C SCL clock line.
 
+    config APP_I2C_CLOCK_HZ
+        int "MT6701 I2C clock frequency (Hz)"
+        range 100000 1000000
+        default 1000000
+        help
+            I2C clock used to read the MT6701. The sensor supports up to
+            1 MHz, provided the physical bus meets its 150 ns maximum
+            SDA/SCL rise and fall times. Use 400000 as a conservative fallback.
+
 endmenu

@@ -1,5 +1,9 @@
 CONFIG_IDF_TARGET="esp32s3"
 
+# MT6701 supports a 1 us minimum SCL period (1 MHz maximum). The physical bus
+# must keep SDA/SCL rise and fall times below 150 ns at this speed.
+CONFIG_APP_I2C_CLOCK_HZ=1000000
+
 # Keep the RTOS tick at 1 kHz; the 4 kHz loop is driven by GPTimer.
 CONFIG_FREERTOS_HZ=1000
 

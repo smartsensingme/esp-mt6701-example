@@ -31,6 +31,7 @@ Ambos os drivers incluem flags do Kconfig para alternar a sincronização por Mu
 Configurável diretamente via `menuconfig`. Padrões:
 *   **`CONFIG_APP_I2C_SDA_PIN`** (Padrão: `8`)
 *   **`CONFIG_APP_I2C_SCL_PIN`** (Padrão: `9`)
+*   **`CONFIG_APP_I2C_CLOCK_HZ`** (Padrão: `1000000`): clock do MT6701, configurável de 100 kHz a 1 MHz.
 
 ### Configuração do Driver do Motor / Ponte H (Configuração do Componente)
 Expõe as seguintes opções no Kconfig para controle do BTS7960:
@@ -51,7 +52,8 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 
 ### 2. Leitura I2C de Alta Velocidade (2 Bytes em Burst)
 *   Para reduzir ao mínimo a transação no barramento, a tarefa de estimação a 4 kHz executa uma única leitura em lote de **2 bytes** para obter o ângulo completo de 14 bits dos registradores `0x03` e `0x04`.
-*   A transação combinada requer aproximadamente 45 pulsos de SCL, correspondendo a um mínimo teórico de **~112,5 µs** com clock de 400 kHz.
+*   A transação combinada requer aproximadamente 45 pulsos de SCL, correspondendo a um mínimo teórico de **~45 µs** com clock de 1 MHz.
+*   O datasheet especifica período mínimo de SCL de 1 µs, permitindo 1 MHz, desde que os tempos de subida e descida de SDA/SCL não ultrapassem 150 ns. Pull-ups externos adequados e conexões curtas são recomendados; 400 kHz permanece disponível como alternativa conservadora no `menuconfig`.
 
 ### 3. Medição Dinâmica do Delta de Tempo (`dt`)
 *   Em vez de assumir um período ideal de `0.00025s` (250 µs), a tarefa mede o tempo real entre amostras usando **`esp_timer_get_time()`**.
