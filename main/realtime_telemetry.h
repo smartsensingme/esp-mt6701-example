@@ -2,47 +2,42 @@
 #define REALTIME_TELEMETRY_H_
 
 #include "esp_err.h"
+#include "esp_rt_diagnostics.h"
 #include <stdint.h>
+
+typedef enum {
+  REALTIME_DIAG_EVENT_ESTIMATOR_UPDATE,
+  REALTIME_DIAG_EVENT_CONTROL_UPDATE,
+  REALTIME_DIAG_EVENT_SENSOR_ERROR,
+  REALTIME_DIAG_EVENT_COUNT,
+} realtime_diag_event_id_t;
+
+typedef enum {
+  REALTIME_DIAG_STAGE_I2C,
+  REALTIME_DIAG_STAGE_KALMAN,
+  REALTIME_DIAG_STAGE_CONTROL,
+  REALTIME_DIAG_STAGE_SNAPSHOT,
+  REALTIME_DIAG_STAGE_COUNT,
+} realtime_diag_stage_id_t;
+
+typedef enum {
+  REALTIME_DIAG_INTERVAL_SAMPLE,
+  REALTIME_DIAG_INTERVAL_CONTROL,
+  REALTIME_DIAG_INTERVAL_COUNT,
+} realtime_diag_interval_id_t;
 
 /**
  * @brief Immutable snapshot sent from the Core 1 loop to the Core 0 logger.
  *
- * The real-time loop fills this value from its current plant state and timing
- * instrumentation. The telemetry task receives a copy, so it never accesses
- * live sensor, Kalman, controller, or motor objects.
+ * It combines the reusable timing result with an application-owned
+ * instantaneous control payload. The telemetry task receives a copy, so it
+ * never accesses live sensor, Kalman, controller, or motor objects.
  */
 typedef struct {
-  /* Counts collected only during the reported five-second window. */
-  uint32_t estimator_updates;
-  uint32_t control_updates;
-  uint32_t missed_timer_events;
-  uint32_t sensor_errors;
-  uint32_t deadline_overruns;
-  uint32_t window_duration_us;
+  /* Reusable timing/counter snapshot produced by esp_rt_diagnostics. */
+  esp_rt_diag_snapshot_t diagnostics;
 
-  /* Maximum execution times measured during that window, all in us. */
-  uint32_t max_wake_latency_us;
-  uint32_t max_i2c_time_us;
-  uint32_t max_kalman_time_us;
-  uint32_t max_control_time_us;
-  uint32_t max_processing_time_us;
-  uint32_t max_cycle_time_us;
-  uint32_t lifetime_max_processing_time_us;
-  uint32_t previous_telemetry_time_us;
-
-  /* Minimum/maximum actual sampling and control intervals, in us. */
-  uint32_t min_sample_dt_us;
-  uint32_t max_sample_dt_us;
-  uint32_t min_control_dt_us;
-  uint32_t max_control_dt_us;
-
-  /* Lifetime counters, including windows intentionally omitted from logs. */
-  uint32_t total_estimator_updates;
-  uint32_t total_control_updates;
-  uint32_t total_missed_timer_events;
-  uint32_t total_sensor_errors;
-
-  /* Plant and estimator state captured at publication time. */
+  /* Application-owned instantaneous state captured at publication time. */
   int32_t total_turns;
   float measured_angle_deg;
   float estimated_angle_deg;

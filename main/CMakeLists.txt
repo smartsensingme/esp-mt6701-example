@@ -5,6 +5,7 @@ idf_component_register(SRCS "main.c"
                             "realtime_telemetry.c"
                        INCLUDE_DIRS ""
                        REQUIRES esp-mt6701
+                                esp_rt_diagnostics
                                 kalman-filter-c
                                 esp-engine-driver
                                 esp_driver_gptimer

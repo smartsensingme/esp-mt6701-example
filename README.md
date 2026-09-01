@@ -16,6 +16,7 @@ The workspace is organized as follows:
 - **`components/esp-mt6701`**: Git submodule for the MT6701 14-bit magnetic encoder driver, utilizing the modern ESP-IDF master I2C driver (`driver/i2c_master.h`) and optimized to run strictly in read-only mode (software-driven offset and direction).
 - **`components/esp-engine-driver`**: Git submodule for the BTS7960 dual PWM H-bridge motor driver, utilizing the ESP32-S3's native high-performance **MCPWM** peripheral.
 - **`components/kalman-filter-c`**: Git submodule pointing to the pure C Kalman Filter library.
+- **`components/esp_rt_diagnostics`**: Reusable development-time component for bounded timing statistics, event counters, deadlines, and immutable diagnostic snapshots. It does not record time series.
 - **`main/`**: Real-time application that reads the MT6701 and updates the Kalman filter at **4 kHz**, runs a speed PID at **1 kHz**, drives the H-bridge, and publishes telemetry every 5 seconds.
 
 ### Separation of responsibilities
@@ -24,7 +25,7 @@ The workspace is organized as follows:
 |---|---|---|
 | Acquisition and estimation | `realtime_loop.c` and `engine_angle_kalman.c` | Reads the sensor and estimates angle, speed, and acceleration at 4 kHz |
 | Control | `motor_controller.c` | Runs the 1 kHz PID and alternates the reference between 600 and 900 RPM every 10 s |
-| Instrumentation | `timing_window_t` and measurements in `realtime_loop.c` | Measures jitter, duration, errors, and deadline violations; does not log |
+| Instrumentation | `components/esp_rt_diagnostics` | Measures jitter, duration, errors, and deadline violations; does not log |
 | Telemetry | `realtime_telemetry.c` and `.h` | Owns the queue, copies results to Core 0, and prints them; does not control the motor |
 
 **Instrumentation measures timing behavior. Telemetry transports and presents those measurements.** Neither is the control law.
@@ -53,6 +54,15 @@ Exposes physical configuration settings for the BTS7960:
 *   **`CONFIG_ENGINE_PIN_LPWM`** (Default: `2`): GPIO pin for Reverse direction PWM.
 *   **`CONFIG_ENGINE_PIN_ENABLE`** (Default: `3`): GPIO pin for both R_EN/L_EN tied together.
 
+### Real-Time Diagnostics (Development)
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_ENABLE`** (Default: `y`): Enables diagnostic collection and snapshot publication. Disable it to compile the hot-path instrumentation into no-ops.
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING`** (Default: `y`): Measures named I2C, Kalman, control, and snapshot stages plus sampling/control intervals.
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`** (Default: `5000`): Sets the snapshot accumulation window.
+
+These snapshots combine reusable timing diagnostics with an instantaneous,
+application-owned PID state. They are development diagnostics, not control
+time-series recording.
+
 ---
 
 ## ⚡ High-Speed Optimizations & Timing Accuracy
@@ -77,7 +87,7 @@ To support high rotational speeds (such as 30,000 RPM or more) and ensure maximu
 *   A **GPTimer** generates an interrupt every 250 µs. The ISR only sends a direct notification to the real-time task; no I2C transaction or Kalman operation runs inside the interrupt.
 *   The MT6701 and the complete Kalman state (position, velocity, and acceleration) are updated at **4 kHz**.
 *   Every four samples, the PID calculates and applies a command limited to **0% through 100%**, resulting in a **1 kHz** control rate. For tuning experiments, the reference alternates between **600 and 900 RPM** every 10 seconds.
-*   A low-priority task on Core 0 receives telemetry every **5 seconds**. To measure the serial output's own interference, it prints one silent window and silently discards the following window contaminated by that output. This produces one trustworthy report every **10 seconds**. No log formatting or output runs on Core 1 after GPTimer starts.
+*   A low-priority task on Core 0 receives telemetry every **5 seconds**. It preserves the window affected by the previous serial output and reports it beside the following quiet window, labeling them `log-affected` and `quiet`. Reports appear every **10 seconds** without hiding the instrumentation's own impact. No log formatting or output runs on Core 1 after GPTimer starts.
 
 ### 5. Real-Time Loop Isolation
 *   The complete acquisition, estimation, and control task is created with `xTaskCreatePinnedToCore()` on **Core 1** at priority `configMAX_PRIORITIES - 1`.
@@ -87,8 +97,8 @@ To support high rotational speeds (such as 30,000 RPM or more) and ensure maximu
 *   The FreeRTOS tick remains at **1 kHz**: the 4 kHz timing comes from GPTimer and does not require raising the global scheduler tick rate.
 
 ### 6. Windowed Timing Diagnostics
-*   Telemetry crosses to Core 0 only once every 5 seconds instead of updating a queue on every control cycle. Only windows containing no log output are displayed.
-*   Each window reports effective rates, missed notifications, I2C errors, 250 µs deadline overruns, and minimum/maximum `dt` values.
+*   Telemetry crosses to Core 0 only once every 5 seconds instead of updating a queue on every control cycle. Quiet and log-affected windows are displayed separately.
+*   Each window reports effective rates, missed notifications, I2C errors, 250 µs deadline overruns, and minimum/maximum `dt` values. Failures include both window and lifetime totals.
 *   Maximum wake latency, I2C transaction, Kalman, control, and total processing times reset every window. A separate lifetime maximum remains available only as a reference.
 
 ---

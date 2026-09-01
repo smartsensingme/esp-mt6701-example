@@ -16,6 +16,7 @@ O espaço de trabalho está estruturado da seguinte forma:
 - **`components/esp-mt6701`**: Submódulo Git para o driver do sensor MT6701, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`) e otimizado para rodar estritamente como somente leitura (calibrações de offset e direção resolvidas em software).
 - **`components/esp-engine-driver`**: Submódulo Git para o driver de motor por ponte H BTS7960, utilizando o periférico de alta performance **MCPWM** nativo do ESP32-S3.
 - **`components/kalman-filter-c`**: Submódulo Git apontando para a biblioteca pura em C do Filtro de Kalman.
+- **`components/esp_rt_diagnostics`**: Componente reutilizável de desenvolvimento para estatísticas temporais limitadas, contadores de eventos, deadlines e snapshots imutáveis de diagnóstico. Não captura séries temporais.
 - **`main/`**: Aplicação em tempo real que lê o MT6701 e atualiza o Kalman a **4 kHz**, executa um PID de velocidade a **1 kHz**, comanda a ponte H e publica telemetria a cada 5 segundos.
 
 ### Separação de responsabilidades
@@ -24,7 +25,7 @@ O espaço de trabalho está estruturado da seguinte forma:
 |---|---|---|
 | Aquisição e estimação | `realtime_loop.c` e `engine_angle_kalman.c` | Lê o sensor e estima ângulo, velocidade e aceleração a 4 kHz |
 | Controle | `motor_controller.c` | Executa PID a 1 kHz e alterna a referência entre 600 e 900 RPM a cada 10 s |
-| Instrumentação | `timing_window_t` e medições em `realtime_loop.c` | Mede jitter, duração, erros e violações de deadline; não imprime |
+| Instrumentação | `components/esp_rt_diagnostics` | Mede jitter, duração, erros e violações de deadline; não imprime |
 | Telemetria | `realtime_telemetry.c` e `.h` | Mantém a fila, copia os resultados para o Core 0 e imprime; não controla o motor |
 
 **Instrumentação mede o comportamento temporal. Telemetria transporta e apresenta essas medidas.** Nenhuma delas faz parte da lei de controle.
@@ -53,6 +54,15 @@ Expõe as seguintes opções no Kconfig para controle do BTS7960:
 *   **`CONFIG_ENGINE_PIN_LPWM`** (Padrão: `2`): GPIO para o sinal PWM Anti-horário (LPWM).
 *   **`CONFIG_ENGINE_PIN_ENABLE`** (Padrão: `3`): GPIO de Enable para R_EN/L_EN interligados.
 
+### Diagnóstico de Tempo Real (Desenvolvimento)
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_ENABLE`** (Padrão: `y`): Habilita a coleta e publicação dos snapshots. Ao desabilitá-lo, a instrumentação do caminho crítico é compilada como no-op.
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING`** (Padrão: `y`): Mede as etapas nomeadas de I2C, Kalman, controle e snapshot, além dos intervalos de amostragem e controle.
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`** (Padrão: `5000`): Define a janela de acumulação dos snapshots.
+
+Esses snapshots combinam diagnóstico temporal reutilizável com um estado
+instantâneo do PID definido pela aplicação. São diagnósticos de desenvolvimento,
+não uma captura de séries temporais do controle.
+
 ---
 
 ## ⚡ Otimizações de Alta Velocidade & Precisão de Tempo
@@ -77,7 +87,7 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 *   Um **GPTimer** gera uma interrupção a cada 250 µs. A ISR apenas envia uma notificação direta para a tarefa de tempo real; nenhuma transação I2C ou operação do Kalman é executada dentro da interrupção.
 *   O MT6701 e o estado completo do Kalman (posição, velocidade e aceleração) são atualizados a **4 kHz**.
 *   A cada quatro amostras, o PID calcula e aplica um comando limitado entre **0% e 100%**, resultando em uma taxa de controle de **1 kHz**. Para ensaios de sintonia, a referência alterna entre **600 e 900 RPM** a cada 10 segundos.
-*   Uma tarefa de baixa prioridade no Core 0 recebe telemetria a cada **5 segundos**. Para medir o efeito da própria saída serial, ela imprime uma janela silenciosa e descarta sem imprimir a janela seguinte, contaminada pela impressão anterior. O resultado é um relatório confiável a cada **10 segundos**. Nenhuma formatação ou impressão ocorre no Core 1 depois que o GPTimer é iniciado.
+*   Uma tarefa de baixa prioridade no Core 0 recebe telemetria a cada **5 segundos**. Ela preserva a janela afetada pela impressão anterior e a exibe junto da janela silenciosa seguinte, identificando-as como `log-affected` e `quiet`. O relatório aparece a cada **10 segundos**, sem esconder o impacto da própria instrumentação. Nenhuma formatação ou impressão ocorre no Core 1 depois que o GPTimer é iniciado.
 
 ### 5. Isolamento do Loop de Tempo Real
 *   A tarefa completa de aquisição, estimação e controle é criada com `xTaskCreatePinnedToCore()` no **Core 1**, usando a prioridade `configMAX_PRIORITIES - 1`.
@@ -87,8 +97,8 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 *   O tick do FreeRTOS permanece em **1 kHz**: a temporização de 4 kHz vem do GPTimer e não exige elevar a frequência global do escalonador.
 
 ### 6. Diagnóstico Temporal por Janela
-*   A telemetria é copiada para o Core 0 somente uma vez a cada 5 segundos, em vez de atualizar uma fila a cada ciclo de controle. Somente as janelas que não contêm impressão de logs são exibidas.
-*   Cada janela informa taxas efetivas, notificações perdidas, erros I2C, violações do deadline de 250 µs e mínimos/máximos de `dt`.
+*   A telemetria é copiada para o Core 0 somente uma vez a cada 5 segundos, em vez de atualizar uma fila a cada ciclo de controle. Janelas silenciosas e afetadas pelo log são apresentadas separadamente.
+*   Cada janela informa taxas efetivas, notificações perdidas, erros I2C, violações do deadline de 250 µs e mínimos/máximos de `dt`. Falhas mostram o valor da janela e o total acumulado.
 *   Os máximos de latência de despertar, transação I2C, Kalman, controle e processamento total são reiniciados em cada janela. Um máximo vitalício separado é mantido apenas como referência.
 
 ---

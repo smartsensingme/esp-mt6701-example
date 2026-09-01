@@ -1,0 +1,28 @@
+menu "ESP Real-Time Diagnostics"
+
+    config ESP_RT_DIAGNOSTICS_ENABLE
+        bool "Enable real-time diagnostic snapshots"
+        default y
+        help
+            Collect bounded timing statistics and event counters inside
+            deterministic tasks. Disable this option after development to
+            compile the instrumentation out of the critical path.
+
+    config ESP_RT_DIAGNOSTICS_DETAILED_TIMING
+        bool "Measure named stages and periodic intervals"
+        depends on ESP_RT_DIAGNOSTICS_ENABLE
+        default y
+        help
+            Collect per-stage maximum execution times and min/max intervals.
+            Core cycle, missed-event, error, and deadline counters remain part
+            of the base diagnostics when this option is disabled.
+
+    config ESP_RT_DIAGNOSTICS_WINDOW_MS
+        int "Diagnostic snapshot window (ms)"
+        depends on ESP_RT_DIAGNOSTICS_ENABLE
+        range 100 3600000
+        default 5000
+        help
+            Duration accumulated before a diagnostic snapshot becomes due.
+
+endmenu

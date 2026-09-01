@@ -16,6 +16,12 @@ CONFIG_ESP_TIMER_TASK_AFFINITY_CPU0=y
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
+# Development-only snapshot diagnostics. Disable the first option to compile
+# hot-path instrumentation into no-ops after timing/control validation.
+CONFIG_ESP_RT_DIAGNOSTICS_ENABLE=y
+CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING=y
+CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS=5000
+
 # Keep the timer-to-task wake path available from internal memory.
 CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=y
 CONFIG_GPTIMER_OBJ_CACHE_SAFE=y

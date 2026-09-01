@@ -25,10 +25,72 @@ static const char *TAG = "REALTIME_LOOP";
 static QueueHandle_t telemetry_queue;
 static TaskHandle_t telemetry_task_handle;
 
+static void log_snapshot(const realtime_telemetry_snapshot_t *telemetry,
+                         const char *window_class) {
+  const esp_rt_diag_snapshot_t *diagnostics = &telemetry->diagnostics;
+  float window_seconds =
+      (float)diagnostics->window_duration_us * MICROSECONDS_TO_SECONDS;
+  float estimator_rate_hz =
+      (float)diagnostics->event_counts[REALTIME_DIAG_EVENT_ESTIMATOR_UPDATE] /
+      window_seconds;
+  float control_rate_hz =
+      (float)diagnostics->event_counts[REALTIME_DIAG_EVENT_CONTROL_UPDATE] /
+      window_seconds;
+
+  ESP_LOGI(TAG,
+           "snapshot[%s]: duration=%.3f s rate=%.1f/%.1f Hz "
+           "cycles=%" PRIu32 " total_cycles=%" PRIu32 " wake_valid=%" PRIu32,
+           window_class, window_seconds, estimator_rate_hz, control_rate_hz,
+           diagnostics->cycles, diagnostics->total_cycles,
+           diagnostics->cycles_with_valid_wake_time);
+  ESP_LOGI(TAG,
+           "events[%s]: missed=%" PRIu32 "/%" PRIu32 " errors=%" PRIu32
+           "/%" PRIu32 " overruns=%" PRIu32 "/%" PRIu32 " (window/total)",
+           window_class, diagnostics->missed_events,
+           diagnostics->total_missed_events,
+           diagnostics->event_counts[REALTIME_DIAG_EVENT_SENSOR_ERROR],
+           diagnostics->total_event_counts[REALTIME_DIAG_EVENT_SENSOR_ERROR],
+           diagnostics->deadline_overruns,
+           diagnostics->total_deadline_overruns);
+  ESP_LOGI(TAG,
+           "timing[%s]: max wake=%" PRIu32 " i2c=%" PRIu32 " kalman=%" PRIu32
+           " control=%" PRIu32 " processing=%" PRIu32 " cycle=%" PRIu32
+           " us lifetime_processing=%" PRIu32 " us previous_snapshot=%" PRIu32
+           " us",
+           window_class, diagnostics->max_wake_latency_us,
+           diagnostics->stages[REALTIME_DIAG_STAGE_I2C].max_duration_us,
+           diagnostics->stages[REALTIME_DIAG_STAGE_KALMAN].max_duration_us,
+           diagnostics->stages[REALTIME_DIAG_STAGE_CONTROL].max_duration_us,
+           diagnostics->max_processing_time_us, diagnostics->max_cycle_time_us,
+           diagnostics->lifetime_max_processing_time_us,
+           diagnostics->stages[REALTIME_DIAG_STAGE_SNAPSHOT].max_duration_us);
+  ESP_LOGI(TAG,
+           "state[%s]: angle=%.3f/%.3f deg speed=%.3f RPM "
+           "accel=%.3f RPM/s turns=%" PRId32 " reference=%.1f RPM "
+           "error=%.1f RPM pid=%.2f/%.2f/%.2f%% output=%.1f%%",
+           window_class, telemetry->measured_angle_deg,
+           telemetry->estimated_angle_deg, telemetry->estimated_speed_rpm,
+           telemetry->estimated_acceleration_rpm_s, telemetry->total_turns,
+           telemetry->speed_reference_rpm, telemetry->speed_error_rpm,
+           telemetry->pid_proportional_term, telemetry->pid_integral_term,
+           telemetry->pid_derivative_term, telemetry->motor_output_percent);
+  ESP_LOGI(TAG,
+           "interval[%s]: sample=%" PRIu32 "..%" PRIu32 " us control=%" PRIu32
+           "..%" PRIu32 " us",
+           window_class,
+           diagnostics->intervals[REALTIME_DIAG_INTERVAL_SAMPLE].min_us,
+           diagnostics->intervals[REALTIME_DIAG_INTERVAL_SAMPLE].max_us,
+           diagnostics->intervals[REALTIME_DIAG_INTERVAL_CONTROL].min_us,
+           diagnostics->intervals[REALTIME_DIAG_INTERVAL_CONTROL].max_us);
+}
+
 static void telemetry_logger_task(void *argument) {
   (void)argument;
   realtime_telemetry_snapshot_t telemetry;
-  bool discard_contaminated_window = false;
+  realtime_telemetry_snapshot_t deferred_log_affected;
+  /* The first window may contain startup logs, so classify it as affected. */
+  bool next_window_is_log_affected = true;
+  bool have_deferred_log_affected = false;
 
   ESP_LOGI(TAG, "Telemetry logger running on Core %d", xPortGetCoreID());
   while (true) {
@@ -37,60 +99,24 @@ static void telemetry_logger_task(void *argument) {
     }
 
     /*
-     * Serial output can disturb shared SoC resources during the following
-     * five-second timing window. Print one silent window, discard the next one,
-     * then print again. Snapshots are still produced every five seconds.
+     * Serial output can disturb shared SoC resources during the measurement
+     * window that follows it. Preserve that snapshot without printing, then
+     * report it beside the subsequent quiet window. This keeps the act of
+     * reporting confined to alternating windows without hiding its impact.
      */
-    if (discard_contaminated_window) {
-      discard_contaminated_window = false;
+    if (next_window_is_log_affected) {
+      deferred_log_affected = telemetry;
+      have_deferred_log_affected = true;
+      next_window_is_log_affected = false;
       continue;
     }
-    discard_contaminated_window = true;
 
-    /* Rates use the measured window duration, not an assumed exact five
-     * seconds. */
-    float window_seconds =
-        (float)telemetry.window_duration_us * MICROSECONDS_TO_SECONDS;
-    float estimator_rate_hz =
-        (float)telemetry.estimator_updates / window_seconds;
-    float control_rate_hz = (float)telemetry.control_updates / window_seconds;
-
-    ESP_LOGI(TAG,
-             "silent window: angle=%.3f/%.3f deg speed=%.3f RPM "
-             "accel=%.3f RPM/s turns=%" PRId32,
-             telemetry.measured_angle_deg, telemetry.estimated_angle_deg,
-             telemetry.estimated_speed_rpm,
-             telemetry.estimated_acceleration_rpm_s, telemetry.total_turns);
-    ESP_LOGI(TAG,
-             "control: reference=%.1f RPM error=%.1f RPM "
-             "pid=%.2f/%.2f/%.2f%% output=%.1f%%",
-             telemetry.speed_reference_rpm, telemetry.speed_error_rpm,
-             telemetry.pid_proportional_term, telemetry.pid_integral_term,
-             telemetry.pid_derivative_term, telemetry.motor_output_percent);
-    ESP_LOGI(TAG,
-             "window: rate=%.1f/%.1f Hz missed=%" PRIu32 " errors=%" PRIu32
-             " overruns=%" PRIu32,
-             estimator_rate_hz, control_rate_hz, telemetry.missed_timer_events,
-             telemetry.sensor_errors, telemetry.deadline_overruns);
-    ESP_LOGI(TAG,
-             "window max: wake=%" PRIu32 " i2c=%" PRIu32 " kalman=%" PRIu32
-             " control=%" PRIu32 " processing=%" PRIu32 " cycle=%" PRIu32
-             " us lifetime_processing=%" PRIu32
-             " us previous_telemetry=%" PRIu32 " us",
-             telemetry.max_wake_latency_us, telemetry.max_i2c_time_us,
-             telemetry.max_kalman_time_us, telemetry.max_control_time_us,
-             telemetry.max_processing_time_us, telemetry.max_cycle_time_us,
-             telemetry.lifetime_max_processing_time_us,
-             telemetry.previous_telemetry_time_us);
-    ESP_LOGI(TAG,
-             "window dt: sample=%" PRIu32 "..%" PRIu32 " us control=%" PRIu32
-             "..%" PRIu32 " us totals: est=%" PRIu32 " ctl=%" PRIu32
-             " missed=%" PRIu32 " errors=%" PRIu32,
-             telemetry.min_sample_dt_us, telemetry.max_sample_dt_us,
-             telemetry.min_control_dt_us, telemetry.max_control_dt_us,
-             telemetry.total_estimator_updates, telemetry.total_control_updates,
-             telemetry.total_missed_timer_events,
-             telemetry.total_sensor_errors);
+    if (have_deferred_log_affected) {
+      log_snapshot(&deferred_log_affected, "log-affected");
+      have_deferred_log_affected = false;
+    }
+    log_snapshot(&telemetry, "quiet");
+    next_window_is_log_affected = true;
   }
 }
 

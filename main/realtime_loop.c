@@ -19,6 +19,7 @@
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_rt_diagnostics.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -26,7 +27,6 @@
 #include "motor_controller.h"
 #include "mt6701.h"
 #include "realtime_telemetry.h"
-#include <limits.h>
 
 /* Core allocation: keep console/system work away from the control core. */
 #define CONTROL_CORE_ID 1
@@ -36,9 +36,6 @@
 #define TIMER_RESOLUTION_HZ 1000000U
 #define SENSOR_PERIOD_US (TIMER_RESOLUTION_HZ / REALTIME_SENSOR_RATE_HZ)
 #define CONTROL_DIVIDER (REALTIME_SENSOR_RATE_HZ / REALTIME_CONTROL_RATE_HZ)
-
-/* Observability period. */
-#define TELEMETRY_PERIOD_US 5000000LL
 
 /* Filter tuning reference and unit conversions. */
 #define KALMAN_REFERENCE_RATE_HZ 1000.0f
@@ -57,6 +54,12 @@ _Static_assert(TIMER_RESOLUTION_HZ % REALTIME_SENSOR_RATE_HZ == 0,
                "Sensor period must be an integer number of timer ticks");
 _Static_assert(REALTIME_SENSOR_RATE_HZ % REALTIME_CONTROL_RATE_HZ == 0,
                "Sensor rate must be divisible by control rate");
+_Static_assert(REALTIME_DIAG_STAGE_COUNT <= ESP_RT_DIAG_MAX_STAGES,
+               "Application declares too many diagnostic stages");
+_Static_assert(REALTIME_DIAG_EVENT_COUNT <= ESP_RT_DIAG_MAX_EVENTS,
+               "Application declares too many diagnostic events");
+_Static_assert(REALTIME_DIAG_INTERVAL_COUNT <= ESP_RT_DIAG_MAX_INTERVALS,
+               "Application declares too many diagnostic intervals");
 
 static const char *TAG = "REALTIME_LOOP";
 
@@ -69,76 +72,11 @@ typedef struct {
   struct kalman_3d filter;            /* [angle, speed, acceleration]. */
 } realtime_loop_context_t;
 
-/*
- * INSTRUMENTATION ACCUMULATOR
- *
- * Updated only by the Core 1 task. These values measure the real-time loop;
- * this structure performs no logging and has no effect on the control law.
- */
-typedef struct {
-  int64_t start_time_us; /* Beginning of the current five-second window. */
-
-  /* Event counters for the current window. */
-  uint32_t estimator_updates;
-  uint32_t control_updates;
-  uint32_t missed_timer_events;
-  uint32_t sensor_errors;
-  uint32_t deadline_overruns;
-
-  /* Worst-case durations for the current window, all in us. */
-  uint32_t max_wake_latency_us;
-  uint32_t max_i2c_time_us;
-  uint32_t max_kalman_time_us;
-  uint32_t max_control_time_us;
-  uint32_t max_processing_time_us;
-  uint32_t max_cycle_time_us;
-
-  /* Observed interval extremes, all in us. */
-  uint32_t min_sample_dt_us;
-  uint32_t max_sample_dt_us;
-  uint32_t min_control_dt_us;
-  uint32_t max_control_dt_us;
-} timing_window_t;
-
 /* Static lifetime is required because app_main returns after creating tasks. */
 static realtime_loop_context_t loop_context;
 
 /* Written by the GPTimer ISR and read once by the awakened Core 1 task. */
 static volatile uint32_t last_timer_isr_time_us;
-
-/* ======================== INSTRUMENTATION HELPERS ======================== */
-
-static inline void update_max(uint32_t *maximum, uint32_t value) {
-  if (value > *maximum) {
-    *maximum = value;
-  }
-}
-
-static inline void update_range(uint32_t *minimum, uint32_t *maximum,
-                                uint32_t value) {
-  if (value < *minimum) {
-    *minimum = value;
-  }
-  update_max(maximum, value);
-}
-
-/*
- * Clear all per-window counters. UINT32_MAX is used as the initial minimum so
- * the first real sample becomes both the minimum and maximum.
- */
-static void reset_timing_window(timing_window_t *window,
-                                int64_t start_time_us) {
-  *window = (timing_window_t){
-      .start_time_us = start_time_us,
-      .min_sample_dt_us = UINT32_MAX,
-      .min_control_dt_us = UINT32_MAX,
-  };
-}
-
-/* Convert the untouched UINT32_MAX sentinel into a meaningful log value. */
-static uint32_t valid_minimum(uint32_t minimum) {
-  return minimum == UINT32_MAX ? 0 : minimum;
-}
 
 /* ============================ 4 KHZ SCHEDULER ============================ */
 
@@ -153,7 +91,7 @@ static bool IRAM_ATTR sampling_timer_callback(
   (void)timer;
   (void)event_data;
 
-  last_timer_isr_time_us = (uint32_t)esp_timer_get_time();
+  esp_rt_diag_isr_capture(&last_timer_isr_time_us);
   BaseType_t high_priority_task_woken = pdFALSE;
   vTaskNotifyGiveFromISR((TaskHandle_t)user_context, &high_priority_task_woken);
   return high_priority_task_woken == pdTRUE;
@@ -254,16 +192,19 @@ static esp_err_t start_sampling_timer(TaskHandle_t realtime_task,
  * owns the queue and all Core 0 formatting; this function only maps loop state
  * into the transport structure and resets the instrumentation window.
  *
- * Return value: Core 1 time spent assembling and publishing the snapshot, us.
  */
-static uint32_t publish_telemetry_snapshot(
-    realtime_loop_context_t *context, timing_window_t *window,
-    int64_t publish_time_us, uint32_t lifetime_max_processing_time_us,
-    uint32_t previous_telemetry_time_us, uint32_t total_estimator_updates,
-    uint32_t total_control_updates, uint32_t total_missed_timer_events,
-    uint32_t total_sensor_errors, float measured_angle_deg,
-    const motor_controller_t *controller) {
-  int64_t telemetry_start_us = esp_timer_get_time();
+static void publish_telemetry_snapshot(realtime_loop_context_t *context,
+                                       esp_rt_diag_t *diagnostics,
+                                       int64_t publish_time_us,
+                                       float measured_angle_deg,
+                                       const motor_controller_t *controller) {
+  int64_t snapshot_start_us = esp_rt_diag_stage_begin();
+  esp_rt_diag_snapshot_t diagnostics_snapshot;
+  if (esp_rt_diag_take_snapshot(diagnostics, publish_time_us,
+                                &diagnostics_snapshot) != ESP_OK) {
+    return;
+  }
+
   /* Turn count comes from MT6701 tracking; speed comes from Kalman below. */
   int32_t total_turns = 0;
   mt6701_get_total_turns(&context->sensor, &total_turns);
@@ -271,28 +212,7 @@ static uint32_t publish_telemetry_snapshot(
   motor_controller_get_status(controller, &controller_status);
 
   realtime_telemetry_snapshot_t telemetry = {
-      .estimator_updates = window->estimator_updates,
-      .control_updates = window->control_updates,
-      .missed_timer_events = window->missed_timer_events,
-      .sensor_errors = window->sensor_errors,
-      .deadline_overruns = window->deadline_overruns,
-      .window_duration_us = (uint32_t)(publish_time_us - window->start_time_us),
-      .max_wake_latency_us = window->max_wake_latency_us,
-      .max_i2c_time_us = window->max_i2c_time_us,
-      .max_kalman_time_us = window->max_kalman_time_us,
-      .max_control_time_us = window->max_control_time_us,
-      .max_processing_time_us = window->max_processing_time_us,
-      .max_cycle_time_us = window->max_cycle_time_us,
-      .lifetime_max_processing_time_us = lifetime_max_processing_time_us,
-      .previous_telemetry_time_us = previous_telemetry_time_us,
-      .min_sample_dt_us = valid_minimum(window->min_sample_dt_us),
-      .max_sample_dt_us = window->max_sample_dt_us,
-      .min_control_dt_us = valid_minimum(window->min_control_dt_us),
-      .max_control_dt_us = window->max_control_dt_us,
-      .total_estimator_updates = total_estimator_updates,
-      .total_control_updates = total_control_updates,
-      .total_missed_timer_events = total_missed_timer_events,
-      .total_sensor_errors = total_sensor_errors,
+      .diagnostics = diagnostics_snapshot,
       .total_turns = total_turns,
       .measured_angle_deg = measured_angle_deg,
       .estimated_angle_deg = context->filter.x[0],
@@ -307,10 +227,8 @@ static uint32_t publish_telemetry_snapshot(
       .motor_output_percent = controller_status.output_percent,
   };
   realtime_telemetry_publish(&telemetry);
-
-  /* The next acquisition belongs to a new, independent timing window. */
-  reset_timing_window(window, publish_time_us);
-  return (uint32_t)(esp_timer_get_time() - telemetry_start_us);
+  esp_rt_diag_stage_end(diagnostics, REALTIME_DIAG_STAGE_SNAPSHOT,
+                        snapshot_start_us);
 }
 
 /* ============= CORE 1 ACQUISITION, ESTIMATION AND CONTROL ============== */
@@ -320,7 +238,7 @@ static uint32_t publish_telemetry_snapshot(
  *
  * Fast path on every timer event (4 kHz): sensor -> measured dt -> Kalman.
  * Divided path on every fourth event (1 kHz): controller -> motor driver.
- * Side path every five seconds: copy instrumentation to the Core 0 logger.
+ * Side path at the configured window: copy diagnostics to the Core 0 logger.
  */
 static void realtime_task(void *argument) {
   realtime_loop_context_t *context = (realtime_loop_context_t *)argument;
@@ -352,56 +270,58 @@ static void realtime_task(void *argument) {
     return;
   }
 
-  /* Divider and lifetime counters persist across telemetry window resets. */
+  /* Divider and timestamps persist across diagnostic window resets. */
   uint32_t control_divider = 0;
-  uint32_t total_estimator_updates = 0;
-  uint32_t total_control_updates = 0;
-  uint32_t total_missed_timer_events = 0;
-  uint32_t total_sensor_errors = 0;
-  uint32_t lifetime_max_processing_time_us = 0;
-  uint32_t previous_telemetry_time_us = 0;
   /* dt timestamps use actual completion/start instants rather than nominal dt.
    */
   int64_t last_sample_time_us = esp_timer_get_time();
   int64_t last_control_time_us = last_sample_time_us;
   float motor_output_percent = 0.0f;
-  timing_window_t window;
-  reset_timing_window(&window, last_sample_time_us);
+#if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
+  esp_rt_diag_t diagnostics;
+  esp_rt_diag_t *diagnostics_ptr = &diagnostics;
+  const esp_rt_diag_config_t diagnostics_config = {
+      .expected_period_us = SENSOR_PERIOD_US,
+      .deadline_us = SENSOR_PERIOD_US,
+      .stage_count = REALTIME_DIAG_STAGE_COUNT,
+      .event_count = REALTIME_DIAG_EVENT_COUNT,
+      .interval_count = REALTIME_DIAG_INTERVAL_COUNT,
+  };
+  err =
+      esp_rt_diag_init(&diagnostics, &diagnostics_config, last_sample_time_us);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Could not initialize real-time diagnostics: %s",
+             esp_err_to_name(err));
+    engine_driver_set_speed(context->motor, 0.0f);
+    vTaskDelete(NULL);
+    return;
+  }
+#else
+  esp_rt_diag_t *const diagnostics_ptr = NULL;
+#endif
 
   while (true) {
     /* Scheduler: wait for the 4 kHz GPTimer notification. */
     uint32_t pending_events = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-    uint32_t wake_time_us = (uint32_t)esp_timer_get_time();
-    uint32_t wake_latency_us = wake_time_us - last_timer_isr_time_us;
-    update_max(&window.max_wake_latency_us, wake_latency_us);
-
-    /*
-     * FreeRTOS accumulates notifications if the task cannot run in time.
-     * Process one fresh sensor sample now and count the excess periods as
-     * missed; do not execute a burst of stale catch-up iterations.
-     */
-    if (pending_events > 1) {
-      uint32_t missed = pending_events - 1;
-      window.missed_timer_events += missed;
-      total_missed_timer_events += missed;
-    }
+    esp_rt_diag_cycle_begin_from_isr(diagnostics_ptr, &last_timer_isr_time_us,
+                                     pending_events);
 
     /* Acquisition: one MT6701 burst read and cached-state update. */
-    int64_t processing_start_us = esp_timer_get_time();
-    int64_t i2c_start_us = processing_start_us;
+    int64_t i2c_start_us = esp_rt_diag_stage_begin();
     err = mt6701_update(&context->sensor);
     int64_t i2c_end_us = esp_timer_get_time();
-    update_max(&window.max_i2c_time_us, (uint32_t)(i2c_end_us - i2c_start_us));
+    esp_rt_diag_stage_record(diagnostics_ptr, REALTIME_DIAG_STAGE_I2C,
+                             i2c_start_us, i2c_end_us);
 
     if (err == ESP_OK) {
       /* Timestamp the sample when the I2C transaction has completed. */
       uint32_t sample_dt_us = (uint32_t)(i2c_end_us - last_sample_time_us);
       last_sample_time_us = i2c_end_us;
-      update_range(&window.min_sample_dt_us, &window.max_sample_dt_us,
-                   sample_dt_us);
+      esp_rt_diag_interval(diagnostics_ptr, REALTIME_DIAG_INTERVAL_SAMPLE,
+                           sample_dt_us);
 
       /* Estimation: update angle, speed and acceleration at 4 kHz. */
-      int64_t kalman_start_us = esp_timer_get_time();
+      int64_t kalman_start_us = esp_rt_diag_stage_begin();
       float sample_dt = (float)sample_dt_us * MICROSECONDS_TO_SECONDS;
       /*
        * get_last reads the value cached by mt6701_update(); it causes no second
@@ -412,15 +332,14 @@ static void realtime_task(void *argument) {
           sample_dt > 0.0f && sample_dt < 0.1f) {
         engine_angle_kalman_3d_update(&context->filter, measured_angle_deg,
                                       sample_dt);
-        window.estimator_updates++;
-        total_estimator_updates++;
+        esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_ESTIMATOR_UPDATE,
+                          1U);
       }
-      update_max(&window.max_kalman_time_us,
-                 (uint32_t)(esp_timer_get_time() - kalman_start_us));
+      esp_rt_diag_stage_end(diagnostics_ptr, REALTIME_DIAG_STAGE_KALMAN,
+                            kalman_start_us);
     } else {
       /* Preserve the previous Kalman state and retry the sensor next period. */
-      window.sensor_errors++;
-      total_sensor_errors++;
+      esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_SENSOR_ERROR, 1U);
     }
 
     /* Control: every fourth estimator cycle produces the 1 kHz motor action. */
@@ -431,8 +350,9 @@ static void realtime_task(void *argument) {
       uint32_t control_dt_us =
           (uint32_t)(control_start_us - last_control_time_us);
       last_control_time_us = control_start_us;
-      update_range(&window.min_control_dt_us, &window.max_control_dt_us,
-                   control_dt_us);
+      esp_rt_diag_interval(diagnostics_ptr, REALTIME_DIAG_INTERVAL_CONTROL,
+                           control_dt_us);
+      int64_t control_stage_start_us = esp_rt_diag_stage_begin();
 
       /* Kalman x[1] is deg/s; 360 deg/rev and 60 s/min give 1 RPM per 6 deg/s.
        */
@@ -443,50 +363,19 @@ static void realtime_task(void *argument) {
           (float)control_dt_us * MICROSECONDS_TO_SECONDS);
       /* Apply the saturated 0..100% command returned by the PID controller. */
       engine_driver_set_speed(context->motor, motor_output_percent);
-      window.control_updates++;
-      total_control_updates++;
-      update_max(&window.max_control_time_us,
-                 (uint32_t)(esp_timer_get_time() - control_start_us));
+      esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_CONTROL_UPDATE,
+                        1U);
+      esp_rt_diag_stage_end(diagnostics_ptr, REALTIME_DIAG_STAGE_CONTROL,
+                            control_stage_start_us);
     }
 
     /* Instrumentation: measure this cycle without printing from Core 1. */
-    int64_t processing_end_us = esp_timer_get_time();
-    uint32_t processing_time_us =
-        (uint32_t)(processing_end_us - processing_start_us);
-    /* Full deadline consumption is scheduler wake latency plus useful work. */
-    uint32_t cycle_time_us = wake_latency_us + processing_time_us;
-    update_max(&window.max_processing_time_us, processing_time_us);
-    update_max(&window.max_cycle_time_us, cycle_time_us);
-    update_max(&lifetime_max_processing_time_us, processing_time_us);
-    if (cycle_time_us > SENSOR_PERIOD_US) {
-      window.deadline_overruns++;
-    }
+    int64_t processing_end_us = esp_rt_diag_cycle_end_now(diagnostics_ptr);
 
-    /* Telemetry: copy one snapshot every 5 s; Core 0 performs the logging. */
-    if (processing_end_us - window.start_time_us >= TELEMETRY_PERIOD_US) {
-      previous_telemetry_time_us = publish_telemetry_snapshot(
-          context, &window, processing_end_us, lifetime_max_processing_time_us,
-          previous_telemetry_time_us, total_estimator_updates,
-          total_control_updates, total_missed_timer_events, total_sensor_errors,
-          measured_angle_deg, &controller);
-
-      /*
-       * Account for snapshot publication separately. The window was reset by
-       * publish_telemetry_snapshot(), so this cost is attributed to the
-       * following window and can be distinguished through previous_telemetry
-       * in the next report.
-       */
-      uint32_t processing_with_telemetry_us =
-          (uint32_t)(esp_timer_get_time() - processing_start_us);
-      update_max(&lifetime_max_processing_time_us,
-                 processing_with_telemetry_us);
-      update_max(&window.max_processing_time_us, processing_with_telemetry_us);
-      update_max(&window.max_cycle_time_us,
-                 wake_latency_us + processing_with_telemetry_us);
-      if (cycle_time_us <= SENSOR_PERIOD_US &&
-          wake_latency_us + processing_with_telemetry_us > SENSOR_PERIOD_US) {
-        window.deadline_overruns++;
-      }
+    /* Snapshot and application payload are copied only when the window ends. */
+    if (esp_rt_diag_snapshot_due(diagnostics_ptr, processing_end_us)) {
+      publish_telemetry_snapshot(context, diagnostics_ptr, processing_end_us,
+                                 measured_angle_deg, &controller);
     }
   }
 }
@@ -503,10 +392,12 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
 
   loop_context.motor = motor;
 
+#if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_err_t err = realtime_telemetry_start();
   if (err != ESP_OK) {
     return err;
   }
+#endif
 
   /* Sensor, estimator and controller share Core 1 and the highest app priority.
    */
@@ -514,7 +405,9 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
       realtime_task, "motor_realtime", REALTIME_TASK_STACK_SIZE, &loop_context,
       REALTIME_TASK_PRIORITY, NULL, CONTROL_CORE_ID);
   if (task_created != pdPASS) {
+#if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
     realtime_telemetry_stop();
+#endif
     return ESP_ERR_NO_MEM;
   }
 
