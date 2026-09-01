@@ -2,6 +2,7 @@ idf_component_register(SRCS "main.c"
                             "engine_angle_kalman.c"
                             "motor_controller.c"
                             "realtime_loop.c"
+                            "realtime_telemetry.c"
                        INCLUDE_DIRS ""
                        REQUIRES esp-mt6701
                                 kalman-filter-c

@@ -2,6 +2,14 @@
 
 void engine_angle_kalman_3d_update(struct kalman_3d *k, float measured_angle,
                                    float dt) {
+  /*
+   * Constant-acceleration state model:
+   *   x[0] = angle [deg]
+   *   x[1] = angular velocity [deg/s]
+   *   x[2] = angular acceleration [deg/s^2]
+   * The only direct measurement is angle, so H = [1 0 0].
+   */
+
   /* --- 1. PREDICT STEP --- */
   float h = 0.5f * dt * dt;
 
@@ -10,7 +18,10 @@ void engine_angle_kalman_3d_update(struct kalman_3d *k, float measured_angle,
   float x_pred_omega = k->x[1] + k->x[2] * dt;
   float x_pred_alpha = k->x[2];
 
-  /* P_pred = F * P * F^T + Q */
+  /*
+   * P_pred = F * P * F^T + Q. The expressions are expanded explicitly to
+   * avoid general-purpose matrix operations in the 4 kHz path.
+   */
   float a0 = k->P[0][0] + dt * k->P[1][0] + h * k->P[2][0];
   float a1 = k->P[0][1] + dt * k->P[1][1] + h * k->P[2][1];
   float a2 = k->P[0][2] + dt * k->P[1][2] + h * k->P[2][2];
@@ -59,7 +70,10 @@ void engine_angle_kalman_3d_update(struct kalman_3d *k, float measured_angle,
     k->x[0] += 360.0f;
   }
 
-  /* Correct covariance: P = (I - K * H) * P_pred. */
+  /*
+   * Correct covariance: P = (I - K * H) * P_pred. Symmetric terms are copied
+   * from their counterparts instead of recomputing equivalent expressions.
+   */
   k->P[0][0] = (1.0f - K_0) * P_pred_00;
   k->P[0][1] = (1.0f - K_0) * P_pred_01;
   k->P[0][2] = (1.0f - K_0) * P_pred_02;

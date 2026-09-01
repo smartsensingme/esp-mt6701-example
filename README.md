@@ -6,6 +6,8 @@ This repository contains the demonstration of the integration of the **MT6701** 
 
 The project is configured to run on the **ESP32-S3** microcontroller and consumes its external dependencies through Git submodules.
 
+> **Code walkthrough:** see the [real-time code and architecture guide](docs/arquitetura-tempo-real.md) (Portuguese). It documents startup, the 4 kHz cycle, 1 kHz control, internal data structures, instrumentation, telemetry, and every log field.
+
 ---
 
 ## 🛠️ Project Architecture
@@ -14,7 +16,18 @@ The workspace is organized as follows:
 - **`components/esp-mt6701`**: Git submodule for the MT6701 14-bit magnetic encoder driver, utilizing the modern ESP-IDF master I2C driver (`driver/i2c_master.h`) and optimized to run strictly in read-only mode (software-driven offset and direction).
 - **`components/esp-engine-driver`**: Git submodule for the BTS7960 dual PWM H-bridge motor driver, utilizing the ESP32-S3's native high-performance **MCPWM** peripheral.
 - **`components/kalman-filter-c`**: Git submodule pointing to the pure C Kalman Filter library.
-- **`main/`**: Real-time application that reads the MT6701 and updates the Kalman filter at **4 kHz**, runs a temporary controller at **1 kHz**, drives the H-bridge, and publishes telemetry every 5 seconds.
+- **`main/`**: Real-time application that reads the MT6701 and updates the Kalman filter at **4 kHz**, runs a speed PID at **1 kHz**, drives the H-bridge, and publishes telemetry every 5 seconds.
+
+### Separation of responsibilities
+
+| Responsibility | Location | Purpose |
+|---|---|---|
+| Acquisition and estimation | `realtime_loop.c` and `engine_angle_kalman.c` | Reads the sensor and estimates angle, speed, and acceleration at 4 kHz |
+| Control | `motor_controller.c` | Runs the 1 kHz PID and alternates the reference between 600 and 900 RPM every 10 s |
+| Instrumentation | `timing_window_t` and measurements in `realtime_loop.c` | Measures jitter, duration, errors, and deadline violations; does not log |
+| Telemetry | `realtime_telemetry.c` and `.h` | Owns the queue, copies results to Core 0, and prints them; does not control the motor |
+
+**Instrumentation measures timing behavior. Telemetry transports and presents those measurements.** Neither is the control law.
 
 ---
 
@@ -63,7 +76,7 @@ To support high rotational speeds (such as 30,000 RPM or more) and ensure maximu
 ### 4. Dual-Rate Scheduling
 *   A **GPTimer** generates an interrupt every 250 µs. The ISR only sends a direct notification to the real-time task; no I2C transaction or Kalman operation runs inside the interrupt.
 *   The MT6701 and the complete Kalman state (position, velocity, and acceleration) are updated at **4 kHz**.
-*   Every four samples, the temporary controller applies a fixed **50%** command to the H-bridge, resulting in a **1 kHz** control rate. Its API already receives speed and `dt` for the future PID implementation.
+*   Every four samples, the PID calculates and applies a command limited to **0% through 100%**, resulting in a **1 kHz** control rate. For tuning experiments, the reference alternates between **600 and 900 RPM** every 10 seconds.
 *   A low-priority task on Core 0 receives telemetry every **5 seconds**. To measure the serial output's own interference, it prints one silent window and silently discards the following window contaminated by that output. This produces one trustworthy report every **10 seconds**. No log formatting or output runs on Core 1 after GPTimer starts.
 
 ### 5. Real-Time Loop Isolation

@@ -1,3 +1,16 @@
+/*
+ * Dual-rate motor runtime for ESP32-S3.
+ *
+ * Core 1 owns the complete deterministic path:
+ *   GPTimer (4 kHz) -> MT6701 -> Kalman -> controller (1 kHz) -> MCPWM.
+ *
+ * Core 0 owns presentation only:
+ *   telemetry queue -> formatted ESP_LOGI output.
+ *
+ * Timing instrumentation runs on Core 1 because it measures the critical path,
+ * but it never prints. Telemetry copies those measurements to Core 0 and never
+ * participates in the control law. See docs/arquitetura-tempo-real.md.
+ */
 #include "realtime_loop.h"
 
 #include "driver/gptimer.h"
@@ -8,29 +21,33 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
 #include "freertos/task.h"
 #include "kalman.h"
 #include "motor_controller.h"
 #include "mt6701.h"
-#include <inttypes.h>
+#include "realtime_telemetry.h"
 #include <limits.h>
 
+/* Core allocation: keep console/system work away from the control core. */
 #define CONTROL_CORE_ID 1
-#define HOUSEKEEPING_CORE_ID 0
+
+/* Hardware scheduling and communication. One timer tick equals one us. */
 #define I2C_PORT_NUM I2C_NUM_0
 #define TIMER_RESOLUTION_HZ 1000000U
 #define SENSOR_PERIOD_US (TIMER_RESOLUTION_HZ / REALTIME_SENSOR_RATE_HZ)
 #define CONTROL_DIVIDER (REALTIME_SENSOR_RATE_HZ / REALTIME_CONTROL_RATE_HZ)
+
+/* Observability period. */
 #define TELEMETRY_PERIOD_US 5000000LL
-#define DUMMY_MOTOR_OUTPUT_PERCENT 50.0f
+
+/* Filter tuning reference and unit conversions. */
 #define KALMAN_REFERENCE_RATE_HZ 1000.0f
 #define DEGREES_PER_SECOND_TO_RPM (1.0f / 6.0f)
 #define MICROSECONDS_TO_SECONDS (1.0f / 1000000.0f)
+
+/* FreeRTOS task resources. */
 #define REALTIME_TASK_STACK_SIZE 4096U
-#define LOGGER_TASK_STACK_SIZE 4096U
 #define REALTIME_TASK_PRIORITY (configMAX_PRIORITIES - 1)
-#define LOGGER_TASK_PRIORITY 1
 
 #if CONFIG_FREERTOS_NUMBER_OF_CORES < 2
 #error "The deterministic control loop requires both ESP32-S3 CPU cores"
@@ -43,67 +60,53 @@ _Static_assert(REALTIME_SENSOR_RATE_HZ % REALTIME_CONTROL_RATE_HZ == 0,
 
 static const char *TAG = "REALTIME_LOOP";
 
+/* Functional state owned exclusively by the Core 1 real-time task. */
 typedef struct {
-  struct engine_config *motor;
-  i2c_master_bus_handle_t i2c_bus;
-  i2c_master_dev_handle_t i2c_device;
-  mt6701_dev_t sensor;
-  struct kalman_3d filter;
+  struct engine_config *motor;        /* Initialized MCPWM driver state. */
+  i2c_master_bus_handle_t i2c_bus;    /* ESP-IDF I2C controller handle. */
+  i2c_master_dev_handle_t i2c_device; /* MT6701 at address 0x06. */
+  mt6701_dev_t sensor;                /* Sensor cache and turn tracking. */
+  struct kalman_3d filter;            /* [angle, speed, acceleration]. */
 } realtime_loop_context_t;
 
+/*
+ * INSTRUMENTATION ACCUMULATOR
+ *
+ * Updated only by the Core 1 task. These values measure the real-time loop;
+ * this structure performs no logging and has no effect on the control law.
+ */
 typedef struct {
-  uint32_t estimator_updates;
-  uint32_t control_updates;
-  uint32_t missed_timer_events;
-  uint32_t sensor_errors;
-  uint32_t deadline_overruns;
-  uint32_t window_duration_us;
-  uint32_t max_wake_latency_us;
-  uint32_t max_i2c_time_us;
-  uint32_t max_kalman_time_us;
-  uint32_t max_control_time_us;
-  uint32_t max_processing_time_us;
-  uint32_t max_cycle_time_us;
-  uint32_t lifetime_max_processing_time_us;
-  uint32_t previous_telemetry_time_us;
-  uint32_t min_sample_dt_us;
-  uint32_t max_sample_dt_us;
-  uint32_t min_control_dt_us;
-  uint32_t max_control_dt_us;
-  uint32_t total_estimator_updates;
-  uint32_t total_control_updates;
-  uint32_t total_missed_timer_events;
-  uint32_t total_sensor_errors;
-  int32_t total_turns;
-  float measured_angle_deg;
-  float estimated_angle_deg;
-  float estimated_speed_rpm;
-  float estimated_acceleration_rpm_s;
-  float motor_output_percent;
-} realtime_telemetry_t;
+  int64_t start_time_us; /* Beginning of the current five-second window. */
 
-typedef struct {
-  int64_t start_time_us;
+  /* Event counters for the current window. */
   uint32_t estimator_updates;
   uint32_t control_updates;
   uint32_t missed_timer_events;
   uint32_t sensor_errors;
   uint32_t deadline_overruns;
+
+  /* Worst-case durations for the current window, all in us. */
   uint32_t max_wake_latency_us;
   uint32_t max_i2c_time_us;
   uint32_t max_kalman_time_us;
   uint32_t max_control_time_us;
   uint32_t max_processing_time_us;
   uint32_t max_cycle_time_us;
+
+  /* Observed interval extremes, all in us. */
   uint32_t min_sample_dt_us;
   uint32_t max_sample_dt_us;
   uint32_t min_control_dt_us;
   uint32_t max_control_dt_us;
 } timing_window_t;
 
+/* Static lifetime is required because app_main returns after creating tasks. */
 static realtime_loop_context_t loop_context;
-static QueueHandle_t telemetry_queue;
+
+/* Written by the GPTimer ISR and read once by the awakened Core 1 task. */
 static volatile uint32_t last_timer_isr_time_us;
+
+/* ======================== INSTRUMENTATION HELPERS ======================== */
 
 static inline void update_max(uint32_t *maximum, uint32_t value) {
   if (value > *maximum) {
@@ -119,6 +122,10 @@ static inline void update_range(uint32_t *minimum, uint32_t *maximum,
   update_max(maximum, value);
 }
 
+/*
+ * Clear all per-window counters. UINT32_MAX is used as the initial minimum so
+ * the first real sample becomes both the minimum and maximum.
+ */
 static void reset_timing_window(timing_window_t *window,
                                 int64_t start_time_us) {
   *window = (timing_window_t){
@@ -128,10 +135,18 @@ static void reset_timing_window(timing_window_t *window,
   };
 }
 
+/* Convert the untouched UINT32_MAX sentinel into a meaningful log value. */
 static uint32_t valid_minimum(uint32_t minimum) {
   return minimum == UINT32_MAX ? 0 : minimum;
 }
 
+/* ============================ 4 KHZ SCHEDULER ============================ */
+
+/*
+ * GPTimer ISR. Keep this callback bounded and IRAM-safe: timestamp the event,
+ * notify the already-created task, and request an immediate context switch.
+ * Sensor access and all floating-point work deliberately remain outside ISR.
+ */
 static bool IRAM_ATTR sampling_timer_callback(
     gptimer_handle_t timer, const gptimer_alarm_event_data_t *event_data,
     void *user_context) {
@@ -144,8 +159,18 @@ static bool IRAM_ATTR sampling_timer_callback(
   return high_priority_task_woken == pdTRUE;
 }
 
+/*
+ * Create the I2C bus and MT6701 from Core 1, obtain the first valid angle, then
+ * initialize the Kalman state at that angle. Starting from the current angle
+ * avoids a large artificial innovation during the first filter update.
+ */
 static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
                                               float *initial_angle_deg) {
+  /*
+   * Internal pull-ups are enabled as a fallback. At the configured 1 MHz,
+   * suitable external pull-ups and short wiring are still required to meet the
+   * MT6701 rise/fall-time specification.
+   */
   i2c_master_bus_config_t bus_config = {
       .i2c_port = I2C_PORT_NUM,
       .sda_io_num = CONFIG_APP_I2C_SDA_PIN,
@@ -175,6 +200,11 @@ static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
       mt6701_get_last_angle_degrees(&context->sensor, initial_angle_deg), TAG,
       "Could not get initial MT6701 angle");
 
+  /*
+   * Q values were originally tuned for a 1 kHz update. Scale their per-update
+   * contribution by 1/4 because this estimator runs four times faster. R is
+   * the angle-measurement variance and therefore is not rate-scaled here.
+   */
   const float q_rate_scale =
       KALMAN_REFERENCE_RATE_HZ / (float)REALTIME_SENSOR_RATE_HZ;
   kalman_3d_config_t filter_config = {
@@ -187,6 +217,10 @@ static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
   return ESP_OK;
 }
 
+/*
+ * Configure an auto-reloading 250 us GPTimer. user_context is the task handle
+ * that the ISR will notify on every alarm.
+ */
 static esp_err_t start_sampling_timer(TaskHandle_t realtime_task,
                                       gptimer_handle_t *timer) {
   gptimer_config_t timer_config = {
@@ -215,82 +249,28 @@ static esp_err_t start_sampling_timer(TaskHandle_t realtime_task,
   return gptimer_start(*timer);
 }
 
-static void logger_task(void *argument) {
-  (void)argument;
-  realtime_telemetry_t telemetry;
-  bool discard_contaminated_window = false;
-
-  ESP_LOGI(TAG, "Telemetry logger running on Core %d", xPortGetCoreID());
-  while (true) {
-    if (xQueueReceive(telemetry_queue, &telemetry, portMAX_DELAY) != pdTRUE) {
-      continue;
-    }
-
-    /*
-     * Printing the previous report can disturb the following 5-second timing
-     * window through shared SoC resources. Discard that contaminated window
-     * without logging, then report the next fully silent window. This produces
-     * one trustworthy timing report every 10 seconds.
-     */
-    if (discard_contaminated_window) {
-      discard_contaminated_window = false;
-      continue;
-    }
-    discard_contaminated_window = true;
-
-    float window_seconds =
-        (float)telemetry.window_duration_us * MICROSECONDS_TO_SECONDS;
-    float estimator_rate_hz =
-        (float)telemetry.estimator_updates / window_seconds;
-    float control_rate_hz = (float)telemetry.control_updates / window_seconds;
-
-    ESP_LOGI(TAG,
-             "silent window: angle=%.3f/%.3f deg speed=%.3f RPM "
-             "accel=%.3f RPM/s "
-             "turns=%" PRId32 " output=%.1f%%",
-             telemetry.measured_angle_deg, telemetry.estimated_angle_deg,
-             telemetry.estimated_speed_rpm,
-             telemetry.estimated_acceleration_rpm_s, telemetry.total_turns,
-             telemetry.motor_output_percent);
-    ESP_LOGI(TAG,
-             "window: rate=%.1f/%.1f Hz missed=%" PRIu32 " errors=%" PRIu32
-             " overruns=%" PRIu32,
-             estimator_rate_hz, control_rate_hz, telemetry.missed_timer_events,
-             telemetry.sensor_errors, telemetry.deadline_overruns);
-    ESP_LOGI(TAG,
-             "window max: wake=%" PRIu32 " i2c=%" PRIu32 " kalman=%" PRIu32
-             " control=%" PRIu32 " processing=%" PRIu32 " cycle=%" PRIu32
-             " us lifetime_processing=%" PRIu32
-             " us previous_telemetry=%" PRIu32 " us",
-             telemetry.max_wake_latency_us, telemetry.max_i2c_time_us,
-             telemetry.max_kalman_time_us, telemetry.max_control_time_us,
-             telemetry.max_processing_time_us, telemetry.max_cycle_time_us,
-             telemetry.lifetime_max_processing_time_us,
-             telemetry.previous_telemetry_time_us);
-    ESP_LOGI(TAG,
-             "window dt: sample=%" PRIu32 "..%" PRIu32 " us control=%" PRIu32
-             "..%" PRIu32 " us totals: est=%" PRIu32 " ctl=%" PRIu32
-             " missed=%" PRIu32 " errors=%" PRIu32,
-             telemetry.min_sample_dt_us, telemetry.max_sample_dt_us,
-             telemetry.min_control_dt_us, telemetry.max_control_dt_us,
-             telemetry.total_estimator_updates, telemetry.total_control_updates,
-             telemetry.total_missed_timer_events,
-             telemetry.total_sensor_errors);
-  }
-}
-
-static uint32_t publish_telemetry(
+/*
+ * Assemble one coherent snapshot from live Core 1 state. The telemetry module
+ * owns the queue and all Core 0 formatting; this function only maps loop state
+ * into the transport structure and resets the instrumentation window.
+ *
+ * Return value: Core 1 time spent assembling and publishing the snapshot, us.
+ */
+static uint32_t publish_telemetry_snapshot(
     realtime_loop_context_t *context, timing_window_t *window,
     int64_t publish_time_us, uint32_t lifetime_max_processing_time_us,
     uint32_t previous_telemetry_time_us, uint32_t total_estimator_updates,
     uint32_t total_control_updates, uint32_t total_missed_timer_events,
     uint32_t total_sensor_errors, float measured_angle_deg,
-    float motor_output_percent) {
+    const motor_controller_t *controller) {
   int64_t telemetry_start_us = esp_timer_get_time();
+  /* Turn count comes from MT6701 tracking; speed comes from Kalman below. */
   int32_t total_turns = 0;
   mt6701_get_total_turns(&context->sensor, &total_turns);
+  motor_controller_status_t controller_status = {0};
+  motor_controller_get_status(controller, &controller_status);
 
-  realtime_telemetry_t telemetry = {
+  realtime_telemetry_snapshot_t telemetry = {
       .estimator_updates = window->estimator_updates,
       .control_updates = window->control_updates,
       .missed_timer_events = window->missed_timer_events,
@@ -319,17 +299,33 @@ static uint32_t publish_telemetry(
       .estimated_speed_rpm = context->filter.x[1] * DEGREES_PER_SECOND_TO_RPM,
       .estimated_acceleration_rpm_s =
           context->filter.x[2] * DEGREES_PER_SECOND_TO_RPM,
-      .motor_output_percent = motor_output_percent,
+      .speed_reference_rpm = controller_status.reference_rpm,
+      .speed_error_rpm = controller_status.error_rpm,
+      .pid_proportional_term = controller_status.proportional_term,
+      .pid_integral_term = controller_status.integral_term,
+      .pid_derivative_term = controller_status.derivative_term,
+      .motor_output_percent = controller_status.output_percent,
   };
-  xQueueOverwrite(telemetry_queue, &telemetry);
+  realtime_telemetry_publish(&telemetry);
+
+  /* The next acquisition belongs to a new, independent timing window. */
   reset_timing_window(window, publish_time_us);
   return (uint32_t)(esp_timer_get_time() - telemetry_start_us);
 }
 
+/* ============= CORE 1 ACQUISITION, ESTIMATION AND CONTROL ============== */
+
+/*
+ * Highest-priority application task, permanently pinned to Core 1.
+ *
+ * Fast path on every timer event (4 kHz): sensor -> measured dt -> Kalman.
+ * Divided path on every fourth event (1 kHz): controller -> motor driver.
+ * Side path every five seconds: copy instrumentation to the Core 0 logger.
+ */
 static void realtime_task(void *argument) {
   realtime_loop_context_t *context = (realtime_loop_context_t *)argument;
   motor_controller_t controller;
-  motor_controller_init(&controller, DUMMY_MOTOR_OUTPUT_PERCENT);
+  motor_controller_init(&controller);
 
   float measured_angle_deg = 0.0f;
   esp_err_t err = initialize_sensor_and_filter(context, &measured_angle_deg);
@@ -342,10 +338,9 @@ static void realtime_task(void *argument) {
 
   ESP_LOGI(TAG,
            "Control on Core %d: sensor/Kalman=%u Hz control=%u Hz "
-           "I2C=%u Hz initial=%.3f deg dummy=%.1f%%",
+           "I2C=%u Hz initial=%.3f deg PID closed-loop",
            xPortGetCoreID(), REALTIME_SENSOR_RATE_HZ, REALTIME_CONTROL_RATE_HZ,
-           CONFIG_APP_I2C_CLOCK_HZ, measured_angle_deg,
-           DUMMY_MOTOR_OUTPUT_PERCENT);
+           CONFIG_APP_I2C_CLOCK_HZ, measured_angle_deg);
 
   gptimer_handle_t sampling_timer = NULL;
   err = start_sampling_timer(xTaskGetCurrentTaskHandle(), &sampling_timer);
@@ -357,6 +352,7 @@ static void realtime_task(void *argument) {
     return;
   }
 
+  /* Divider and lifetime counters persist across telemetry window resets. */
   uint32_t control_divider = 0;
   uint32_t total_estimator_updates = 0;
   uint32_t total_control_updates = 0;
@@ -364,6 +360,8 @@ static void realtime_task(void *argument) {
   uint32_t total_sensor_errors = 0;
   uint32_t lifetime_max_processing_time_us = 0;
   uint32_t previous_telemetry_time_us = 0;
+  /* dt timestamps use actual completion/start instants rather than nominal dt.
+   */
   int64_t last_sample_time_us = esp_timer_get_time();
   int64_t last_control_time_us = last_sample_time_us;
   float motor_output_percent = 0.0f;
@@ -371,17 +369,24 @@ static void realtime_task(void *argument) {
   reset_timing_window(&window, last_sample_time_us);
 
   while (true) {
+    /* Scheduler: wait for the 4 kHz GPTimer notification. */
     uint32_t pending_events = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
     uint32_t wake_time_us = (uint32_t)esp_timer_get_time();
     uint32_t wake_latency_us = wake_time_us - last_timer_isr_time_us;
     update_max(&window.max_wake_latency_us, wake_latency_us);
 
+    /*
+     * FreeRTOS accumulates notifications if the task cannot run in time.
+     * Process one fresh sensor sample now and count the excess periods as
+     * missed; do not execute a burst of stale catch-up iterations.
+     */
     if (pending_events > 1) {
       uint32_t missed = pending_events - 1;
       window.missed_timer_events += missed;
       total_missed_timer_events += missed;
     }
 
+    /* Acquisition: one MT6701 burst read and cached-state update. */
     int64_t processing_start_us = esp_timer_get_time();
     int64_t i2c_start_us = processing_start_us;
     err = mt6701_update(&context->sensor);
@@ -389,13 +394,19 @@ static void realtime_task(void *argument) {
     update_max(&window.max_i2c_time_us, (uint32_t)(i2c_end_us - i2c_start_us));
 
     if (err == ESP_OK) {
+      /* Timestamp the sample when the I2C transaction has completed. */
       uint32_t sample_dt_us = (uint32_t)(i2c_end_us - last_sample_time_us);
       last_sample_time_us = i2c_end_us;
       update_range(&window.min_sample_dt_us, &window.max_sample_dt_us,
                    sample_dt_us);
 
+      /* Estimation: update angle, speed and acceleration at 4 kHz. */
       int64_t kalman_start_us = esp_timer_get_time();
       float sample_dt = (float)sample_dt_us * MICROSECONDS_TO_SECONDS;
+      /*
+       * get_last reads the value cached by mt6701_update(); it causes no second
+       * I2C transaction. Reject pathological dt values after a long disruption.
+       */
       if (mt6701_get_last_angle_degrees(&context->sensor,
                                         &measured_angle_deg) == ESP_OK &&
           sample_dt > 0.0f && sample_dt < 0.1f) {
@@ -407,10 +418,12 @@ static void realtime_task(void *argument) {
       update_max(&window.max_kalman_time_us,
                  (uint32_t)(esp_timer_get_time() - kalman_start_us));
     } else {
+      /* Preserve the previous Kalman state and retry the sensor next period. */
       window.sensor_errors++;
       total_sensor_errors++;
     }
 
+    /* Control: every fourth estimator cycle produces the 1 kHz motor action. */
     control_divider++;
     if (control_divider >= CONTROL_DIVIDER) {
       control_divider = 0;
@@ -421,11 +434,14 @@ static void realtime_task(void *argument) {
       update_range(&window.min_control_dt_us, &window.max_control_dt_us,
                    control_dt_us);
 
+      /* Kalman x[1] is deg/s; 360 deg/rev and 60 s/min give 1 RPM per 6 deg/s.
+       */
       float estimated_speed_rpm =
           context->filter.x[1] * DEGREES_PER_SECOND_TO_RPM;
       motor_output_percent = motor_controller_update(
           &controller, estimated_speed_rpm,
           (float)control_dt_us * MICROSECONDS_TO_SECONDS);
+      /* Apply the saturated 0..100% command returned by the PID controller. */
       engine_driver_set_speed(context->motor, motor_output_percent);
       window.control_updates++;
       total_control_updates++;
@@ -433,9 +449,11 @@ static void realtime_task(void *argument) {
                  (uint32_t)(esp_timer_get_time() - control_start_us));
     }
 
+    /* Instrumentation: measure this cycle without printing from Core 1. */
     int64_t processing_end_us = esp_timer_get_time();
     uint32_t processing_time_us =
         (uint32_t)(processing_end_us - processing_start_us);
+    /* Full deadline consumption is scheduler wake latency plus useful work. */
     uint32_t cycle_time_us = wake_latency_us + processing_time_us;
     update_max(&window.max_processing_time_us, processing_time_us);
     update_max(&window.max_cycle_time_us, cycle_time_us);
@@ -444,13 +462,20 @@ static void realtime_task(void *argument) {
       window.deadline_overruns++;
     }
 
+    /* Telemetry: copy one snapshot every 5 s; Core 0 performs the logging. */
     if (processing_end_us - window.start_time_us >= TELEMETRY_PERIOD_US) {
-      previous_telemetry_time_us = publish_telemetry(
+      previous_telemetry_time_us = publish_telemetry_snapshot(
           context, &window, processing_end_us, lifetime_max_processing_time_us,
           previous_telemetry_time_us, total_estimator_updates,
           total_control_updates, total_missed_timer_events, total_sensor_errors,
-          measured_angle_deg, motor_output_percent);
+          measured_angle_deg, &controller);
 
+      /*
+       * Account for snapshot publication separately. The window was reset by
+       * publish_telemetry_snapshot(), so this cost is attributed to the
+       * following window and can be distinguished through previous_telemetry
+       * in the next report.
+       */
       uint32_t processing_with_telemetry_us =
           (uint32_t)(esp_timer_get_time() - processing_start_us);
       update_max(&lifetime_max_processing_time_us,
@@ -466,35 +491,30 @@ static void realtime_task(void *argument) {
   }
 }
 
+/*
+ * Public startup entry point. Create telemetry first and real-time second so
+ * every published snapshot has a consumer. All objects have application
+ * lifetime after successful startup.
+ */
 esp_err_t realtime_loop_start(struct engine_config *motor) {
   if (motor == NULL) {
     return ESP_ERR_INVALID_ARG;
   }
 
-  telemetry_queue = xQueueCreate(1, sizeof(realtime_telemetry_t));
-  if (telemetry_queue == NULL) {
-    return ESP_ERR_NO_MEM;
-  }
-
   loop_context.motor = motor;
 
-  TaskHandle_t logger_handle = NULL;
-  BaseType_t task_created = xTaskCreatePinnedToCore(
-      logger_task, "telemetry_logger", LOGGER_TASK_STACK_SIZE, NULL,
-      LOGGER_TASK_PRIORITY, &logger_handle, HOUSEKEEPING_CORE_ID);
-  if (task_created != pdPASS) {
-    vQueueDelete(telemetry_queue);
-    telemetry_queue = NULL;
-    return ESP_ERR_NO_MEM;
+  esp_err_t err = realtime_telemetry_start();
+  if (err != ESP_OK) {
+    return err;
   }
 
-  task_created = xTaskCreatePinnedToCore(
+  /* Sensor, estimator and controller share Core 1 and the highest app priority.
+   */
+  BaseType_t task_created = xTaskCreatePinnedToCore(
       realtime_task, "motor_realtime", REALTIME_TASK_STACK_SIZE, &loop_context,
       REALTIME_TASK_PRIORITY, NULL, CONTROL_CORE_ID);
   if (task_created != pdPASS) {
-    vTaskDelete(logger_handle);
-    vQueueDelete(telemetry_queue);
-    telemetry_queue = NULL;
+    realtime_telemetry_stop();
     return ESP_ERR_NO_MEM;
   }
 
