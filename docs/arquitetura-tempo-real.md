@@ -254,7 +254,7 @@ inovação artificial no primeiro ciclo. A configuração atual é:
 | `Q_theta` | 0,001 | 0,25 | 0,00025 |
 | `Q_omega` | 10 | 0,25 | 2,5 |
 | `Q_alpha` | 100 | 0,25 | 25 |
-| `R` | 0,0004 | não se aplica | 0,0004 |
+| `R` | 0,002 | não se aplica | 0,002 |
 
 A escala é `KALMAN_REFERENCE_RATE_HZ / REALTIME_SENSOR_RATE_HZ`, isto é,
 `1000 / 4000`. Esses números são parâmetros de sintonia do modelo, não
@@ -631,6 +631,12 @@ continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
 - `CONFIG_APP_TIMESERIES_PRETRIGGER_MS`: padrão 1000 ms.
 - `CONFIG_ESP_TIMESERIES_USB_TRANSPORT_ENABLE`: habilita comandos na USB nativa;
 - buffers RX/TX e timeout de escrita do transporte também são configuráveis.
+
+Na configuração diagnóstica de malha aberta, `ARM` também reinicia o perfil
+40%/55%/40%, com 15 s por estágio e `COAST` antes e depois. O quinto canal é o
+ângulo bruto do MT6701, codificado com escala de 0,01 grau e offset de 180 graus.
+Com cinco canais, 128 KiB e 250 Hz, a janela é de 52,428 s. O cliente mede
+separadamente esse tempo de aquisição e o tempo efetivo do `DUMP` USB.
 
 O agendamento automático identifica cada próximo degrau. Depois de `CLEAR`, o
 mesmo degrau não é armado novamente; o firmware espera o identificador seguinte.

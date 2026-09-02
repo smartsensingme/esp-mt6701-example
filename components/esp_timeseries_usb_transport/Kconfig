@@ -18,7 +18,7 @@ menu "ESP Time-Series USB Transport"
         int "USB transmission buffer (bytes)"
         depends on ESP_TIMESERIES_USB_TRANSPORT_ENABLE
         range 1024 16384
-        default 4096
+        default 16384
 
     config ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS
         int "Per-block USB write timeout (ms)"

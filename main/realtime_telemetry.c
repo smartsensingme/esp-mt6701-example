@@ -66,8 +66,12 @@ static void log_snapshot(const realtime_telemetry_snapshot_t *telemetry,
            diagnostics->lifetime_max_processing_time_us,
            diagnostics->stages[REALTIME_DIAG_STAGE_SNAPSHOT].max_duration_us);
   if (telemetry->open_loop_test) {
-    const char *stage_name =
-        telemetry->open_loop_stage < 3U ? "DRIVE" : "COAST";
+    const char *stage_name = !telemetry->open_loop_test_started ? "WAIT_ARM"
+                             : telemetry->open_loop_stage < 3U  ? "DRIVE"
+                                                                : "COAST";
+    uint8_t displayed_stage = telemetry->open_loop_test_started
+                                  ? telemetry->open_loop_stage + 1U
+                                  : 0U;
     ESP_LOGI(TAG,
              "state[%s]: angle=%.3f/%.3f deg speed=%.3f RPM "
              "accel=%.3f RPM/s turns=%" PRId32 " mode=OPEN_LOOP stage=%" PRIu8
@@ -75,8 +79,7 @@ static void log_snapshot(const realtime_telemetry_snapshot_t *telemetry,
              window_class, telemetry->measured_angle_deg,
              telemetry->estimated_angle_deg, telemetry->estimated_speed_rpm,
              telemetry->estimated_acceleration_rpm_s, telemetry->total_turns,
-             telemetry->open_loop_stage + 1U, stage_name,
-             telemetry->motor_output_percent);
+             displayed_stage, stage_name, telemetry->motor_output_percent);
   } else {
     ESP_LOGI(TAG,
              "state[%s]: angle=%.3f/%.3f deg speed=%.3f RPM "

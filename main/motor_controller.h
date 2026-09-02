@@ -17,6 +17,7 @@ typedef struct {
   uint32_t reference_step_count;
   uint8_t open_loop_stage;
   bool high_reference_active;
+  bool open_loop_test_started;
   bool previous_speed_valid;
 } motor_controller_t;
 
@@ -30,17 +31,21 @@ typedef struct {
   uint32_t reference_step_count;
   uint8_t open_loop_stage;
   bool open_loop_test;
+  bool open_loop_test_started;
 } motor_controller_status_t;
 
 /** Initialize the selected test profile and its controller state. */
 void motor_controller_init(motor_controller_t *controller);
 
+/** Start or restart the Kconfig-selected open-loop profile. */
+void motor_controller_start_open_loop_test(motor_controller_t *controller);
+
 /**
  * @brief Calculate the 1 kHz motor command.
  *
- * In the temporary open-loop test, the output runs at 60, 80, and 90 percent
- * for 20 seconds each and then remains at zero (COAST). When that test is
- * disabled in Kconfig, the reference alternates between 600 and 900 RPM.
+ * In the temporary open-loop test, output remains in COAST until explicitly
+ * started, then follows the Kconfig-selected low/high/low profile and returns
+ * to COAST. When disabled, reference alternates between 600 and 900 RPM.
  *
  * @param controller Private controller state.
  * @param measured_speed_rpm Kalman speed estimate in RPM.

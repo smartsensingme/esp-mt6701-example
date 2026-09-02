@@ -35,3 +35,7 @@ builds configured to use USB Serial/JTAG as a console.
 
 USB baud rate is ignored by the hardware CDC device. Host software may use
 115200 as a conventional placeholder.
+
+The default transmit ring is 16 KiB and payloads are submitted in 4 KiB chunks.
+The Octave receiver reports the measured DUMP duration and throughput so it can
+be distinguished from the much longer interval required to fill the recorder.

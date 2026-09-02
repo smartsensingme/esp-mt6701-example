@@ -82,12 +82,16 @@ em DRAM interna e armazena registros intercalados de `int16_t`. O tamanho vem de
 `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` (padrão: 128 KiB); a quantidade de
 amostras é calculada em tempo de execução a partir do número de canais.
 
-Nesta aplicação são registrados velocidade, corrente, ação de controle e
-referência. O console Octave arma cada captura sob demanda e oferece inicialmente
-500 Hz. A taxa pertence a cada operação `ARM`,
+Nesta aplicação são registrados velocidade, corrente, ação de controle,
+referência e ângulo bruto do sensor. O console Octave arma cada captura sob
+demanda. A taxa pertence a cada operação `ARM`,
 deve dividir exatamente 1 kHz e também pode ser escolhida pelo comando USB
-`ARM <rate_hz>`. Com quatro canais e 128 KiB, 500 Hz armazenam 16.384 amostras,
-ou 32,768 s.
+`ARM <rate_hz>`. Com cinco canais e 128 KiB são 13.107 amostras: 26,214 s a
+500 Hz ou 52,428 s a 250 Hz.
+
+A configuração diagnóstica atual habilita um perfil em malha aberta sincronizado
+com `ARM`. O motor permanece em `COAST` até esse comando, aplica 40%, 55% e 40%
+por 15 s cada e retorna a `COAST`. Os valores são configuráveis no Kconfig.
 
 Quando o buffer enche, permanece imutável em `FULL` até `CLEAR`. A API já expõe
 metadados, endereços, escalas, contadores de saturação/valores inválidos e uma
@@ -100,6 +104,8 @@ continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo
 binário. Execute `ts_console()` no Octave para selecionar a porta e operar o
 gravador por menus guiados. A captura automática ao redor dos degraus continua
 disponível no Kconfig, mas vem desabilitada para não disputar um `ARM` do host.
+O cliente Octave informa separadamente os tempos de aquisição e transferência;
+a USB CDC nativa não usa efetivamente o baud rate nominal da API serial.
 
 ---
 
@@ -149,7 +155,10 @@ O projeto integra a biblioteca pura em C do Filtro de Kalman de [kalman-filter-c
 Devido ao comportamento circular do encoder ($0^\circ \to 360^\circ$), o módulo [engine_angle_kalman.c](main/engine_angle_kalman.c) implementa a função especializada `engine_angle_kalman_3d_update` para normalizar o erro de medição (inovação) no intervalo de $[-180^\circ, 180^\circ]$ a fim de evitar picos falsos ao cruzar a borda física.
 
 ### Ajuste de Alta Precisão para o MT6701
-A covariância do ruído de medição `.r` no Filtro de Kalman foi ajustada para **`0.0004f`** (desvio padrão de $0.02^\circ$). Como o MT6701 possui um ruído de transição típico baixíssimo de apenas $0.01^\circ$ RMS, essa sintonia faz o filtro confiar de forma muito mais agressiva no sensor (comparado ao ruído do AS5600), minimizando atrasos de fase e entregando velocidades dinâmicas muito mais realistas.
+A covariância de medição usada no diagnóstico atual é **`0.002f`** (desvio
+padrão de aproximadamente $0.0447^\circ$). Ela foi aumentada de `0.0004f` para
+testar maior suavização da velocidade; as capturas mostraram apenas pequena
+redução da ondulação síncrona com a rotação.
 
 ---
 

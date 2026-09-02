@@ -26,9 +26,13 @@ static float reference_step_period_s = 20.0f;
 /* Low-pass time constant applied before using the speed derivative. */
 static float derivative_filter_tau_s = 0.020f;
 #else
-/* One entry per 20-second stage; the final zero is held indefinitely. */
-static const float open_loop_duty_percent[] = {60.0f, 80.0f, 90.0f, 0.0f};
-static const float open_loop_stage_period_s = 20.0f;
+/* Low/high/low stages followed by COAST, synchronized to recorder ARM. */
+static const float open_loop_duty_percent[] = {
+    (float)CONFIG_APP_OPEN_LOOP_DUTY_LOW_PERCENT,
+    (float)CONFIG_APP_OPEN_LOOP_DUTY_HIGH_PERCENT,
+    (float)CONFIG_APP_OPEN_LOOP_DUTY_LOW_PERCENT, 0.0f};
+static const float open_loop_stage_period_s =
+    (float)CONFIG_APP_OPEN_LOOP_STAGE_SECONDS;
 #endif
 
 #define MOTOR_OUTPUT_MIN_PERCENT 0.0f
@@ -53,6 +57,18 @@ void motor_controller_init(motor_controller_t *controller) {
 #endif
 }
 
+void motor_controller_start_open_loop_test(motor_controller_t *controller) {
+#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+  if (controller != NULL) {
+    controller->profile_elapsed_s = 0.0f;
+    controller->open_loop_stage = 0U;
+    controller->open_loop_test_started = true;
+  }
+#else
+  (void)controller;
+#endif
+}
+
 float motor_controller_update(motor_controller_t *controller,
                               float measured_speed_rpm, float dt) {
   if (controller == NULL) {
@@ -61,6 +77,10 @@ float motor_controller_update(motor_controller_t *controller,
 
   bool valid_dt = dt > 0.0f && dt < 0.1f;
 #if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+  if (!controller->open_loop_test_started) {
+    controller->output_percent = 0.0f;
+    return 0.0f;
+  }
   if (valid_dt && controller->open_loop_stage < 3U) {
     controller->profile_elapsed_s += dt;
     while (controller->profile_elapsed_s >= open_loop_stage_period_s &&
@@ -159,8 +179,10 @@ void motor_controller_get_status(const motor_controller_t *controller,
       .open_loop_stage = controller->open_loop_stage,
 #if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
       .open_loop_test = true,
+      .open_loop_test_started = controller->open_loop_test_started,
 #else
       .open_loop_test = false,
+      .open_loop_test_started = false,
 #endif
   };
 }

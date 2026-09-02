@@ -20,11 +20,13 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
   endif
   unwind_protect
     flush (device);
+    transfer_timer = tic ();
     write (device, uint8 (["DUMP", char(10)]), "uint8");
 
     [metadata, header_lines] = read_header (device);
     payload_bytes = required_number (metadata, "payload_bytes");
     payload = read_exact (device, payload_bytes);
+    transfer_seconds = toc (transfer_timer);
 
     expected_crc = uint32 (hex2dec (required_value (metadata, ...
                                                    "payload_crc32")));
@@ -80,10 +82,14 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
     capture.values = values;
     capture.payload_crc32 = actual_crc;
     capture.header_lines = header_lines;
+    capture.usb_transfer_seconds = transfer_seconds;
+    capture.usb_transfer_kib_s = payload_bytes / 1024 / transfer_seconds;
 
     fprintf ("Capture %d: %d samples, %d channels, %.3f s, CRC %08X OK\n", ...
              capture.capture_id, sample_count, channel_count, ...
              sample_count / sample_rate_hz, actual_crc);
+    fprintf ("USB DUMP: %d bytes in %.3f s (%.1f KiB/s)\n", ...
+             payload_bytes, transfer_seconds, capture.usb_transfer_kib_s);
 
     if (! isempty (output_file))
       save ("-mat7-binary", output_file, "capture");

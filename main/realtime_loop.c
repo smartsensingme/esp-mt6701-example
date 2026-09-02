@@ -94,6 +94,7 @@ enum {
   CAPTURE_CHANNEL_CURRENT_A,
   CAPTURE_CHANNEL_CONTROL_PERCENT,
   CAPTURE_CHANNEL_REFERENCE_RPM,
+  CAPTURE_CHANNEL_ANGLE_DEG,
   CAPTURE_CHANNEL_COUNT,
 };
 
@@ -114,6 +115,10 @@ static const esp_timeseries_channel_t capture_channels[] = {
                                        .unit = "rpm",
                                        .scale = 0.1f,
                                        .offset = 0.0f},
+    [CAPTURE_CHANNEL_ANGLE_DEG] = {.name = "angle",
+                                   .unit = "deg",
+                                   .scale = 0.01f,
+                                   .offset = 180.0f},
 };
 
 #if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
@@ -211,7 +216,7 @@ static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
       .q_theta = 0.001f * q_rate_scale,
       .q_omega = 10.0f * q_rate_scale,
       .q_alpha = 100.0f * q_rate_scale,
-      .r = 0.0004f,
+      .r = 0.002f,
   };
   kalman_3d_init(&context->filter, *initial_angle_deg, &filter_config);
   return ESP_OK;
@@ -289,6 +294,7 @@ static void publish_telemetry_snapshot(realtime_loop_context_t *context,
       .motor_output_percent = controller_status.output_percent,
       .open_loop_stage = controller_status.open_loop_stage,
       .open_loop_test = controller_status.open_loop_test,
+      .open_loop_test_started = controller_status.open_loop_test_started,
   };
 #if CONFIG_ENGINE_CURRENT_SENSE_ENABLE
   engine_current_sense_take_snapshot(&telemetry.current_sense);
@@ -366,6 +372,9 @@ static void realtime_task(void *argument) {
   float motor_output_percent = 0.0f;
 #if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
   uint32_t last_armed_step_id = 0U;
+#endif
+#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+  esp_timeseries_state_t previous_recorder_state = ESP_TIMESERIES_STATE_EMPTY;
 #endif
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_rt_diag_t diagnostics;
@@ -447,6 +456,14 @@ static void realtime_task(void *argument) {
 #if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
       arm_recorder_before_reference_step(&controller, &last_armed_step_id);
 #endif
+#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+      esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
+      if (recorder_state == ESP_TIMESERIES_STATE_ARMED &&
+          previous_recorder_state != ESP_TIMESERIES_STATE_ARMED) {
+        motor_controller_start_open_loop_test(&controller);
+      }
+      previous_recorder_state = recorder_state;
+#endif
 
       /* Kalman x[1] is deg/s; 360 deg/rev and 60 s/min give 1 RPM per 6 deg/s.
        */
@@ -473,6 +490,7 @@ static void realtime_task(void *argument) {
           [CAPTURE_CHANNEL_CURRENT_A] = current_amperes,
           [CAPTURE_CHANNEL_CONTROL_PERCENT] = motor_output_percent,
           [CAPTURE_CHANNEL_REFERENCE_RPM] = controller_status.reference_rpm,
+          [CAPTURE_CHANNEL_ANGLE_DEG] = measured_angle_deg,
       };
       esp_timeseries_record_f32(capture_values, control_start_us);
       esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_CONTROL_UPDATE,

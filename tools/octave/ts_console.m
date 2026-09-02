@@ -203,6 +203,8 @@ endfunction
 
 function completed = wait_until_full (device)
   completed = false;
+  wait_timer = tic ();
+  duration_announced = false;
   fprintf ("Aguardando o buffer; pressione Ctrl+C para cancelar.\n");
   while (true)
     response = ts_command (device, "STATUS", false);
@@ -210,12 +212,19 @@ function completed = wait_until_full (device)
     state = response_field (response, "state");
     samples = str2double (response_field (response, "samples"));
     capacity = str2double (response_field (response, "capacity"));
+    sample_rate_hz = str2double (response_field (response, "sample_rate_hz"));
+    if (! duration_announced && sample_rate_hz > 0)
+      fprintf ("Duracao prevista da aquisicao: %.3f s.\n", ...
+               capacity / sample_rate_hz);
+      duration_announced = true;
+    endif
     percent = 100 * samples / max (capacity, 1);
     fprintf ("\rEstado: %-10s %6d/%6d amostras (%5.1f%%)", ...
              state, samples, capacity, percent);
     fflush (stdout);
     if (strcmp (state, "FULL"))
-      fprintf ("\nCaptura concluida; iniciando o download.\n");
+      fprintf ("\nCaptura concluida em %.3f s; iniciando o download.\n", ...
+               toc (wait_timer));
       completed = true;
       return;
     elseif (strcmp (state, "EMPTY"))
@@ -276,9 +285,10 @@ endfunction
 
 function rate_hz = choose_rate ()
   rate_hz = [];
-  rates = {"1000 Hz", "500 Hz", "250 Hz", "200 Hz", "100 Hz", ...
+  rates = {"250 Hz (recomendado para malha aberta)", "500 Hz", "1000 Hz", ...
+           "200 Hz", "100 Hz", ...
            "50 Hz", "20 Hz", "10 Hz", "Digitar outra taxa", "Cancelar"};
-  values = [1000, 500, 250, 200, 100, 50, 20, 10];
+  values = [250, 500, 1000, 200, 100, 50, 20, 10];
   choice = menu ("Escolha a taxa de amostragem da captura", rates{:});
   if (choice >= 1 && choice <= numel (values))
     rate_hz = values(choice);

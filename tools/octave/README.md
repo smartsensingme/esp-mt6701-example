@@ -35,6 +35,12 @@ are replaced for display by the mean of their valid neighbors and highlighted
 with a red circle. The saved raw and scaled data are never modified. Individual
 protocol operations remain in an advanced menu.
 
+For an open-loop capture containing the raw `angle` channel, the panels change
+to speed, wrapped sensor angle, control duty, and current. The console prints
+the predicted/actual acquisition duration separately from the measured USB DUMP
+duration and KiB/s. With the current five-channel diagnostic build, select
+250 Hz to cover all three 15-second duty stages and the return to COAST.
+
 The plot font size is configurable. Omitting it uses 12 points:
 
     ts_plot_capture(capture, 16)

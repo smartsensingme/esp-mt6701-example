@@ -58,12 +58,30 @@ endmenu
 menu "Motor Test Profile"
 
     config APP_MOTOR_OPEN_LOOP_TEST
-        bool "Run the 60/80/90 percent open-loop test"
+        bool "Run an ARM-synchronized open-loop test"
         default n
         help
-            Temporarily bypass the speed PID and command 60, 80, and 90
-            percent duty for 20 seconds each. After the 90 percent stage the
-            motor remains in COAST until the board is restarted. Disable this
-            option to restore the alternating 600/900 RPM closed-loop profile.
+            Keep the motor in COAST until the recorder receives ARM, then
+            bypass the speed PID and run low/high/low duty stages followed by
+            COAST. Each new ARM restarts the profile. Disable this option to
+            restore the alternating 600/900 RPM closed-loop profile.
+
+    config APP_OPEN_LOOP_DUTY_LOW_PERCENT
+        int "Open-loop low duty (percent)"
+        depends on APP_MOTOR_OPEN_LOOP_TEST
+        range 0 100
+        default 40
+
+    config APP_OPEN_LOOP_DUTY_HIGH_PERCENT
+        int "Open-loop high duty (percent)"
+        depends on APP_MOTOR_OPEN_LOOP_TEST
+        range 0 100
+        default 55
+
+    config APP_OPEN_LOOP_STAGE_SECONDS
+        int "Open-loop stage duration (seconds)"
+        depends on APP_MOTOR_OPEN_LOOP_TEST
+        range 1 120
+        default 15
 
 endmenu

@@ -22,6 +22,8 @@ function figure_handle = ts_plot_capture (capture, fontSize)
   reference = capture.values(reference_index, :);
   control = capture.values(control_index, :);
   current = capture.values(current_index, :);
+  angle_index = optional_channel_index (capture, "angle");
+  open_loop_capture = ! isempty (angle_index) && all (reference == 0);
 
   raw_current = [];
   if (isfield (capture, "raw"))
@@ -37,19 +39,33 @@ function figure_handle = ts_plot_capture (capture, fontSize)
       "position", [0.08, 0.06, 0.84, 0.86]);
   axes_handles = zeros (4, 1);
 
-  axes_handles(1) = subplot (4, 1, 1);
-  plot (time_s, reference, "--", "linewidth", 1.2, ...
-        time_s, speed, "linewidth", 1.1);
-  grid on;
-  ylabel ("velocidade [rpm]");
-  legend ("referencia", "velocidade", "location", "northeast");
-  title (sprintf ("Captura %d a %g Hz", capture.capture_id, ...
-                  capture.sample_rate_hz));
+  if (open_loop_capture)
+    axes_handles(1) = subplot (4, 1, 1);
+    plot (time_s, speed, "linewidth", 1.1);
+    grid on;
+    ylabel ("velocidade [rpm]");
+    title (sprintf ("Malha aberta - captura %d a %g Hz", ...
+                    capture.capture_id, capture.sample_rate_hz));
 
-  axes_handles(2) = subplot (4, 1, 2);
-  plot (time_s, reference - speed, "linewidth", 1.1);
-  grid on;
-  ylabel ("erro [rpm]");
+    axes_handles(2) = subplot (4, 1, 2);
+    plot (time_s, capture.values(angle_index, :), "linewidth", 1.0);
+    grid on;
+    ylabel ("angulo [deg]");
+  else
+    axes_handles(1) = subplot (4, 1, 1);
+    plot (time_s, reference, "--", "linewidth", 1.2, ...
+          time_s, speed, "linewidth", 1.1);
+    grid on;
+    ylabel ("velocidade [rpm]");
+    legend ("referencia", "velocidade", "location", "northeast");
+    title (sprintf ("Captura %d a %g Hz", capture.capture_id, ...
+                    capture.sample_rate_hz));
+
+    axes_handles(2) = subplot (4, 1, 2);
+    plot (time_s, reference - speed, "linewidth", 1.1);
+    grid on;
+    ylabel ("erro [rpm]");
+  endif
 
   axes_handles(3) = subplot (4, 1, 3);
   plot (time_s, control, "linewidth", 1.1);
@@ -76,9 +92,13 @@ function figure_handle = ts_plot_capture (capture, fontSize)
 endfunction
 
 function index = channel_index (capture, name)
-  names = {capture.channels.name};
-  index = find (strcmpi (names, name), 1);
+  index = optional_channel_index (capture, name);
   if (isempty (index))
     error ("Capture does not contain the required '%s' channel", name);
   endif
+endfunction
+
+function index = optional_channel_index (capture, name)
+  names = {capture.channels.name};
+  index = find (strcmpi (names, name), 1);
 endfunction

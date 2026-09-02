@@ -82,11 +82,15 @@ internal-DRAM buffer and stores sample-major, interleaved `int16_t` records.
 `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` selects its size (128 KiB by
 default); runtime channel count determines the sample capacity.
 
-This application records speed, current, control action, and reference. The
-Octave console arms captures on demand and initially offers 500 Hz. The rate
+This application records speed, current, control action, reference, and raw
+sensor angle. The Octave console arms captures on demand. The rate
 belongs to each `ARM` operation, must divide 1 kHz exactly,
-and can also be selected with the USB command `ARM <rate_hz>`. Four channels in
-128 KiB at 500 Hz hold 16,384 samples, or 32.768 s.
+and can also be selected with the USB command `ARM <rate_hz>`. Five channels in
+128 KiB hold 13,107 samples: 26.214 s at 500 Hz or 52.428 s at 250 Hz.
+
+The current diagnostic build enables an ARM-synchronized open-loop profile.
+The motor remains in COAST until `ARM`, then runs 40%, 55%, and 40% duty for
+15 s each before returning to COAST. These values are configurable in Kconfig.
 
 A full buffer stays immutable until `CLEAR`. Metadata, addresses, scaling,
 saturation/invalid counters, and a stable payload view are exposed to the
@@ -98,6 +102,8 @@ workflow. UART0 remains the firmware log/flash port so logs cannot enter the
 binary stream. Run `ts_console()` in Octave for the guided port selection and
 recorder menus. Automatic capture around reference steps remains available in
 Kconfig, but is disabled by default so it cannot race a host-driven `ARM`.
+The Octave client reports acquisition and USB-transfer times separately; native
+USB CDC does not use the nominal serial baud rate.
 
 ---
 
@@ -147,7 +153,10 @@ The project integrates the pure C Kalman Filter library from [kalman-filter-c](h
 Due to the circular behavior of the encoder ($0^\circ \to 360^\circ$), the [engine_angle_kalman.c](main/engine_angle_kalman.c) module implements the specialized function `engine_angle_kalman_3d_update` to normalize the measurement error (innovation) to the range of $[-180^\circ, 180^\circ]$ to prevent false spikes when transitioning the physical boundary.
 
 ### High-Precision MT6701 Tuning
-The measurement noise covariance `.r` parameter in the Kalman Filter config is tuned to **`0.0004f`** (equivalent to a standard deviation of $0.02^\circ$), matching the low transition noise ($0.01^\circ$ RMS typical) of the MT6701. This allows the filter to trust sensor measurements significantly more than it would with an AS5600, minimizing lagging issues while providing smooth velocity outputs.
+The current diagnostic measurement covariance is **`0.002f`** (standard
+deviation about $0.0447^\circ$). It was increased from `0.0004f` to test
+additional velocity smoothing; captures showed only a small reduction in the
+rotation-synchronous ripple.
 
 ---
 

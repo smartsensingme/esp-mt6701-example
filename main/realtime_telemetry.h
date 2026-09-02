@@ -57,6 +57,7 @@ typedef struct {
   float motor_output_percent;
   uint8_t open_loop_stage;
   bool open_loop_test;
+  bool open_loop_test_started;
 } realtime_telemetry_snapshot_t;
 
 /**
