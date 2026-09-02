@@ -1,0 +1,32 @@
+menu "ESP Time-Series USB Transport"
+
+    config ESP_TIMESERIES_USB_TRANSPORT_ENABLE
+        bool "Enable USB Serial/JTAG recorder transport"
+        depends on SOC_USB_SERIAL_JTAG_SUPPORTED
+        default y
+        help
+            Reserve the ESP32-S3 native USB Serial/JTAG CDC port for recorder
+            commands and binary dumps. Console output must use UART only.
+
+    config ESP_TIMESERIES_USB_RX_BUFFER_BYTES
+        int "USB command receive buffer (bytes)"
+        depends on ESP_TIMESERIES_USB_TRANSPORT_ENABLE
+        range 128 4096
+        default 512
+
+    config ESP_TIMESERIES_USB_TX_BUFFER_BYTES
+        int "USB transmission buffer (bytes)"
+        depends on ESP_TIMESERIES_USB_TRANSPORT_ENABLE
+        range 1024 16384
+        default 4096
+
+    config ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS
+        int "Per-block USB write timeout (ms)"
+        depends on ESP_TIMESERIES_USB_TRANSPORT_ENABLE
+        range 100 30000
+        default 3000
+        help
+            Abort a dump if the host stops consuming data. The recorder stays
+            FULL, allowing DUMP to be requested again after reconnecting.
+
+endmenu

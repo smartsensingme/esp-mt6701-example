@@ -23,6 +23,7 @@
 #include "esp_rt_diagnostics.h"
 #include "esp_timer.h"
 #include "esp_timeseries_recorder.h"
+#include "esp_timeseries_usb_transport.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "kalman.h"
@@ -513,13 +514,15 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
     return recorder_err;
   }
 
-#if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
-  esp_err_t err;
-#endif
+  esp_err_t err = esp_timeseries_usb_transport_start();
+  if (err != ESP_OK) {
+    return err;
+  }
 
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   err = realtime_telemetry_start();
   if (err != ESP_OK) {
+    esp_timeseries_usb_transport_stop();
     return err;
   }
 #endif
@@ -533,6 +536,7 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
     realtime_telemetry_stop();
 #endif
+    esp_timeseries_usb_transport_stop();
     return ESP_ERR_NO_MEM;
   }
 

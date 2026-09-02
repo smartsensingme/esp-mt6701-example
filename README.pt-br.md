@@ -85,13 +85,19 @@ amostras é calculada em tempo de execução a partir do número de canais.
 Nesta aplicação são registrados velocidade, corrente, ação de controle e
 referência. A captura automática começa 1 s antes de cada novo degrau de
 referência e usa inicialmente 500 Hz. A taxa pertence a cada operação `ARM`,
-deve dividir exatamente 1 kHz e poderá ser fornecida futuramente pelo Octave.
-Com quatro canais e 128 KiB, 500 Hz armazenam 16.384 amostras, ou 32,768 s.
+deve dividir exatamente 1 kHz e também pode ser escolhida pelo comando USB
+`ARM <rate_hz>`. Com quatro canais e 128 KiB, 500 Hz armazenam 16.384 amostras,
+ou 32,768 s.
 
 Quando o buffer enche, permanece imutável em `FULL` até `CLEAR`. A API já expõe
 metadados, endereços, escalas, contadores de saturação/valores inválidos e uma
-visão do payload para o futuro transporte USB; USB, CRC e comandos não fazem
-parte do componente de armazenamento.
+visão estável do payload ao componente separado de transporte USB. A porta USB
+Serial/JTAG nativa aceita `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR` e
+`HELP`. `DUMP` envia um cabeçalho texto autodescritivo seguido das amostras
+binárias little-endian protegidas por CRC-32/IEEE. Consulte
+`tools/octave/README.md` para receber, converter e plotar a captura. A UART0
+continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo
+binário.
 
 ---
 

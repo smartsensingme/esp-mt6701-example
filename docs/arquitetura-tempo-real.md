@@ -99,8 +99,23 @@ quantiza e escreve nos ciclos selecionados. Não aloca memória, imprime, calcul
 CRC nem executa transporte.
 
 Os estados são `EMPTY -> ARMED -> CAPTURING -> FULL -> EMPTY`. Somente `CLEAR`
-libera uma captura cheia. Isso permite que o futuro transporte USB repita um
+libera uma captura cheia. Isso permite que o transporte USB repita um
 `DUMP` quando o CRC calculado pelo Octave não conferir.
+
+### `components/esp_timeseries_usb_transport` — protocolo USB nativo
+
+Uma tarefa de baixa prioridade no Core 0 atende comandos ASCII na porta USB
+Serial/JTAG nativa do ESP32-S3. `ARM <rate_hz>` arma uma captura imediatamente;
+`STATUS` consulta o estado; `DUMP` envia um cabeçalho `TSRECORDER/1` terminado
+por `END-HEADER`, seguido de `payload_bytes` bytes binários; e `CLEAR` só libera
+uma captura cheia. O cabeçalho descreve dimensões, taxa, canais, unidades,
+escala, offset, valor inválido e CRC-32/IEEE. O payload permanece intercalado
+por amostra, em `int16_t` little-endian, sem cópia intermediária.
+
+O transporte ocupa exclusivamente a porta USB nativa. Console e telemetria
+continuam na UART0, acessível pela porta USB de gravação da placa, portanto não
+há texto de log misturado ao payload. Uma falha ou desconexão durante `DUMP` não
+executa `CLEAR`; a captura continua `FULL` e pode ser solicitada novamente.
 
 ### `components/esp-engine-driver` — atuação e aquisição de `R_IS`
 
@@ -613,11 +628,13 @@ continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
 - `CONFIG_APP_TIMESERIES_AUTO_CAPTURE`: captura antes dos degraus;
 - `CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ`: padrão 500 Hz;
 - `CONFIG_APP_TIMESERIES_PRETRIGGER_MS`: padrão 1000 ms.
+- `CONFIG_ESP_TIMESERIES_USB_TRANSPORT_ENABLE`: habilita comandos na USB nativa;
+- buffers RX/TX e timeout de escrita do transporte também são configuráveis.
 
 O agendamento automático identifica cada próximo degrau. Depois de `CLEAR`, o
 mesmo degrau não é armado novamente; o firmware espera o identificador seguinte.
-A futura ordem USB `ARM <rate_hz>` poderá iniciar imediatamente sem depender do
-perfil automático.
+A ordem USB `ARM <rate_hz>` inicia imediatamente sem depender do perfil
+automático, desde que o gravador esteja `EMPTY` e a taxa divida 1 kHz exatamente.
 
 ### Corrente da BTS7960
 

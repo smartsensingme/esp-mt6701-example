@@ -85,13 +85,17 @@ default); runtime channel count determines the sample capacity.
 This application records speed, current, control action, and reference. An
 automatic capture starts 1 s before each new reference step and initially uses
 500 Hz. The rate belongs to each `ARM` operation, must divide 1 kHz exactly,
-and can later come from an Octave command. Four channels in 128 KiB at 500 Hz
-hold 16,384 samples, or 32.768 s.
+and can also be selected with the USB command `ARM <rate_hz>`. Four channels in
+128 KiB at 500 Hz hold 16,384 samples, or 32.768 s.
 
 A full buffer stays immutable until `CLEAR`. Metadata, addresses, scaling,
-saturation/invalid counters, and a stable payload view are already exposed for
-the future USB transport; USB, CRC, and command parsing remain outside the
-storage component.
+saturation/invalid counters, and a stable payload view are exposed to the
+separate USB transport component. The native USB Serial/JTAG port accepts
+`PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`, and `HELP`. `DUMP` returns a
+self-describing text header followed by little-endian binary samples protected
+by CRC-32/IEEE. See `tools/octave/README.md` for the receiver and plotting
+workflow. UART0 remains the firmware log/flash port so logs cannot enter the
+binary stream.
 
 ---
 
