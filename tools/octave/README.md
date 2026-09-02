@@ -12,6 +12,8 @@ List ports with:
 
 On macOS the native ESP32-S3 port normally resembles
 /dev/cu.usbmodem...; on Linux it normally resembles /dev/ttyACM....
+The interactive console automatically converts macOS `/dev/tty.*` entries
+reported by `serialportlist()` to their `/dev/cu.*` call-out counterparts.
 
 Flash and monitor the firmware through the board's USB-UART/programming
 connector. Run these commands against the other connector, wired directly to

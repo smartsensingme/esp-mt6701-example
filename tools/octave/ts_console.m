@@ -60,14 +60,17 @@ function port_name = choose_port ()
   port_name = "";
   while (true)
     try
-      ports = normalize_ports (serialportlist ());
+      ports = ts_list_serial_ports ();
     catch err
       fprintf (2, "Nao foi possivel listar as portas seriais: %s\n", ...
                err.message);
       ports = {};
     end_try_catch
 
-    options = ports;
+    options = cell (size (ports));
+    for index = 1:numel (ports)
+      options{index} = describe_port (ports{index});
+    endfor
     options{end + 1} = "Atualizar lista de portas";
     options{end + 1} = "Digitar uma porta manualmente";
     options{end + 1} = "Sair";
@@ -96,15 +99,13 @@ function port_name = choose_port ()
   endwhile
 endfunction
 
-function ports = normalize_ports (listed)
-  if (isempty (listed))
-    ports = {};
-  elseif (iscell (listed))
-    ports = cellfun (@char, listed(:), "uniformoutput", false);
-  elseif (ischar (listed))
-    ports = cellstr (listed);
+function label = describe_port (port_name)
+  if (! isempty (strfind (lower (port_name), "usbmodem")))
+    label = sprintf ("%s  [provavel USB nativa]", port_name);
+  elseif (! isempty (strfind (lower (port_name), "usbserial")))
+    label = sprintf ("%s  [provavel USB-UART/gravacao]", port_name);
   else
-    ports = cellstr (listed(:));
+    label = port_name;
   endif
 endfunction
 
