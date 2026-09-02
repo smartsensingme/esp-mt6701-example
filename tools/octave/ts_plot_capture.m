@@ -1,6 +1,12 @@
-function figure_handle = ts_plot_capture (capture)
-  if (nargin != 1)
+function figure_handle = ts_plot_capture (capture, fontSize)
+  if (nargin < 1 || nargin > 2)
     print_usage ();
+  endif
+  if (nargin < 2)
+    fontSize = 12;
+  endif
+  if (! isscalar (fontSize) || ! isfinite (fontSize) || fontSize <= 0)
+    error ("fontSize must be a positive finite scalar");
   endif
   if (! isfield (capture, "channels") || ! isfield (capture, "values") || ...
       ! isfield (capture, "time_s"))
@@ -65,6 +71,8 @@ function figure_handle = ts_plot_capture (capture)
   xlabel ("tempo [s]");
 
   linkaxes (axes_handles, "x");
+  set (findall (figure_handle, "type", "axes"), "fontsize", fontSize);
+  set (findall (figure_handle, "type", "text"), "fontsize", fontSize);
 endfunction
 
 function index = channel_index (capture, name)

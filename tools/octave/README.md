@@ -35,6 +35,10 @@ are replaced for display by the mean of their valid neighbors and highlighted
 with a red circle. The saved raw and scaled data are never modified. Individual
 protocol operations remain in an advanced menu.
 
+The plot font size is configurable. Omitting it uses 12 points:
+
+    ts_plot_capture(capture, 16)
+
 The lower-level functions remain available for automated experiments:
 
     ts_command("/dev/cu.usbmodem1101", "STATUS")
