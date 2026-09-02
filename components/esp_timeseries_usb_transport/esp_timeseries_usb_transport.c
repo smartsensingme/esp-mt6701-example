@@ -38,6 +38,7 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 
 static const char *TAG = "TS_USB";
 static TaskHandle_t transport_task_handle;
+static esp_timeseries_usb_transport_config_t transport_config;
 
 static TickType_t write_timeout_ticks(void) {
   return pdMS_TO_TICKS(CONFIG_ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS);
@@ -210,6 +211,50 @@ static bool parse_arm_rate(const char *line, uint32_t *rate_hz) {
   return true;
 }
 
+static bool parse_named_rate(const char *line, const char *command,
+                             uint32_t *rate_hz) {
+  size_t command_length = strlen(command);
+  if (strncasecmp(line, command, command_length) != 0 ||
+      !isspace((unsigned char)line[command_length])) {
+    return false;
+  }
+  const char *value = line + command_length;
+  while (isspace((unsigned char)*value)) {
+    value++;
+  }
+  char *end = NULL;
+  unsigned long parsed = strtoul(value, &end, 10);
+  if (end == value) {
+    return false;
+  }
+  while (isspace((unsigned char)*end)) {
+    end++;
+  }
+  if (*end != '\0' || parsed > UINT32_MAX) {
+    return false;
+  }
+  *rate_hz = (uint32_t)parsed;
+  return true;
+}
+
+static esp_err_t arm_capture(uint32_t rate_hz, bool calibration_mode) {
+  if (transport_config.arm_handler != NULL) {
+    return transport_config.arm_handler(rate_hz, calibration_mode,
+                                        transport_config.arm_handler_context);
+  }
+  return calibration_mode ? ESP_ERR_NOT_SUPPORTED : esp_timeseries_arm(rate_hz);
+}
+
+static const char *arm_error_message(esp_err_t error) {
+  if (error == ESP_ERR_INVALID_ARG) {
+    return "invalid_sample_rate";
+  }
+  if (error == ESP_ERR_NOT_SUPPORTED) {
+    return "calibration_profile_disabled";
+  }
+  return "recorder_not_empty";
+}
+
 static void send_calibration_status(const char *command) {
   esp_angle_lut_status_t status;
   esp_angle_lut_get_status(&status);
@@ -325,6 +370,16 @@ static bool process_calibration_command(const char *line) {
       send_error("CAL_CLEAR", error, "nvs_error");
     }
   } else {
+    uint32_t rate_hz = 0U;
+    if (parse_named_rate(line, "CAL START", &rate_hz)) {
+      esp_err_t error = arm_capture(rate_hz, true);
+      if (error == ESP_OK) {
+        send_status("CAL_START");
+      } else {
+        send_error("CAL_START", error, arm_error_message(error));
+      }
+      return true;
+    }
     size_t bin_count = 0U;
     uint32_t crc32 = 0U;
     if (!parse_cal_write(line, &bin_count, &crc32)) {
@@ -351,7 +406,8 @@ static void process_command(const char *line) {
     }
   } else if (strcasecmp(line, "HELP") == 0) {
     usb_sendf("OK command=HELP commands=PING,INFO,STATUS,ARM_<hz>,DUMP,CLEAR "
-              "CAL_STATUS,CAL_WRITE,CAL_READ,CAL_ENABLE,CAL_DISABLE,CAL_CLEAR "
+              "CAL_START_<hz>,CAL_STATUS,CAL_WRITE,CAL_READ,CAL_ENABLE,"
+              "CAL_DISABLE,CAL_CLEAR "
               "rate_rule=exact_divisor_of_producer_rate\n");
   } else if (strncasecmp(line, "CAL ", 4U) == 0 &&
              process_calibration_command(line)) {
@@ -359,13 +415,11 @@ static void process_command(const char *line) {
   } else {
     uint32_t rate_hz = 0U;
     if (parse_arm_rate(line, &rate_hz)) {
-      esp_err_t error = esp_timeseries_arm(rate_hz);
+      esp_err_t error = arm_capture(rate_hz, false);
       if (error == ESP_OK) {
         send_status("ARM");
       } else {
-        send_error("ARM", error,
-                   error == ESP_ERR_INVALID_ARG ? "invalid_sample_rate"
-                                                : "recorder_not_empty");
+        send_error("ARM", error, arm_error_message(error));
       }
     } else {
       send_error("UNKNOWN", ESP_ERR_INVALID_ARG, "use_HELP");
@@ -409,15 +463,18 @@ static void transport_task(void *argument) {
   }
 }
 
-esp_err_t esp_timeseries_usb_transport_start(void) {
+esp_err_t esp_timeseries_usb_transport_start(
+    const esp_timeseries_usb_transport_config_t *config) {
   if (transport_task_handle != NULL || usb_serial_jtag_is_driver_installed()) {
     return ESP_ERR_INVALID_STATE;
   }
-  usb_serial_jtag_driver_config_t config = {
+  transport_config =
+      config != NULL ? *config : (esp_timeseries_usb_transport_config_t){0};
+  usb_serial_jtag_driver_config_t driver_config = {
       .tx_buffer_size = CONFIG_ESP_TIMESERIES_USB_TX_BUFFER_BYTES,
       .rx_buffer_size = CONFIG_ESP_TIMESERIES_USB_RX_BUFFER_BYTES,
   };
-  esp_err_t error = usb_serial_jtag_driver_install(&config);
+  esp_err_t error = usb_serial_jtag_driver_install(&driver_config);
   if (error != ESP_OK) {
     return error;
   }
@@ -444,7 +501,11 @@ void esp_timeseries_usb_transport_stop(void) {
 
 #else
 
-esp_err_t esp_timeseries_usb_transport_start(void) { return ESP_OK; }
+esp_err_t esp_timeseries_usb_transport_start(
+    const esp_timeseries_usb_transport_config_t *config) {
+  (void)config;
+  return ESP_OK;
+}
 
 void esp_timeseries_usb_transport_stop(void) {}
 

@@ -88,9 +88,10 @@ belongs to each `ARM` operation, must divide 1 kHz exactly,
 and can also be selected with the USB command `ARM <rate_hz>`. Five channels in
 128 KiB hold 13,107 samples: 26.214 s at 500 Hz or 52.428 s at 250 Hz.
 
-The current diagnostic build enables an ARM-synchronized open-loop profile.
-The motor remains in COAST until `ARM`, then runs 40%, 55%, and 40% duty for
-8 s each before returning to COAST. These values are configurable in Kconfig.
+The current diagnostic build enables a host-requested open-loop profile.
+The motor remains in COAST until `CAL START`, then runs 40%, 55%, and 40% duty
+for 8 s each before returning to COAST. A regular `ARM` starts a fresh
+closed-loop 600/900 RPM experiment. These values are configurable in Kconfig.
 The duration lets a 500 Hz calibration include all plateaus before the buffer
 fills.
 

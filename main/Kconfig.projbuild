@@ -58,13 +58,12 @@ endmenu
 menu "Motor Test Profile"
 
     config APP_MOTOR_OPEN_LOOP_TEST
-        bool "Run an ARM-synchronized open-loop test"
+        bool "Enable the host-requested open-loop calibration profile"
         default n
         help
-            Keep the motor in COAST until the recorder receives ARM, then
-            bypass the speed PID and run low/high/low duty stages followed by
-            COAST. Each new ARM restarts the profile. Disable this option to
-            restore the alternating 600/900 RPM closed-loop profile.
+            Allow CAL START to bypass the speed PID and run low/high/low duty
+            stages followed by COAST. A regular ARM always starts a fresh
+            alternating 600/900 RPM closed-loop experiment.
 
     config APP_OPEN_LOOP_DUTY_LOW_PERCENT
         int "Open-loop low duty (percent)"

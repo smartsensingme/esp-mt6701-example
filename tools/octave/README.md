@@ -65,7 +65,7 @@ Calibration protocol commands are also available directly:
     status = ts_calibration_write(port, calibration, true)
 
 The final argument above requests enablement only after CRC and readback
-verification. Firmware commands are `CAL STATUS`, `CAL WRITE`, `CAL READ`,
+verification. Firmware commands are `CAL START`, `CAL STATUS`, `CAL WRITE`, `CAL READ`,
 `CAL ENABLE`, `CAL DISABLE`, and `CAL CLEAR`.
 
 The plot font size is configurable. Omitting it uses 12 points:

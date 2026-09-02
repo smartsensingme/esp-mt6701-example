@@ -62,7 +62,7 @@ CONFIG_ESP_TIMER_IN_IRAM=y
 # CONFIG_MT6701_THREAD_SAFE is not set
 # CONFIG_ENGINE_THREAD_SAFE is not set
 
-# Diagnostic profile: COAST until Octave sends ARM, then 40/55/40 percent for
+# Calibration profile: CAL START runs 40/55/40 percent in open loop for
 # 8 seconds each and return to COAST. Each new ARM restarts the profile.
 CONFIG_APP_MOTOR_OPEN_LOOP_TEST=y
 CONFIG_APP_OPEN_LOOP_DUTY_LOW_PERCENT=40

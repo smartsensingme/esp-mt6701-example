@@ -12,6 +12,7 @@ Commands are newline terminated:
 - DUMP
 - CLEAR
 - CAL STATUS
+- CAL START followed by a sample rate in Hz
 - CAL WRITE followed by bin count and hexadecimal CRC32
 - CAL READ
 - CAL ENABLE or CAL DISABLE
@@ -29,7 +30,9 @@ sample-interleaved, little-endian int16 data. payload_crc32 is CRC-32/IEEE of
 the complete binary payload. A failed or disconnected transfer does not clear
 the recorder; the host can request DUMP again.
 
-`CAL WRITE` replies with `state=READY` before receiving the exact binary
+`ARM` selects the application's normal closed-loop capture while `CAL START`
+selects its open-loop calibration profile. `CAL WRITE` replies with
+`state=READY` before receiving the exact binary
 little-endian `int16` LUT payload. The firmware validates its CRC, correction
 bounds, and cyclic monotonicity, commits it to the inactive NVS slot, and leaves
 it disabled. `CAL READ` returns an `ANGLELUT/1` text header followed by the

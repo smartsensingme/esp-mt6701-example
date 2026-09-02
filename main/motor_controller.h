@@ -4,6 +4,12 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef enum {
+  MOTOR_CONTROLLER_MODE_IDLE = 0,
+  MOTOR_CONTROLLER_MODE_CLOSED_LOOP,
+  MOTOR_CONTROLLER_MODE_OPEN_LOOP_TEST,
+} motor_controller_mode_t;
+
 typedef struct {
   float reference_rpm;
   float error_rpm;
@@ -16,6 +22,7 @@ typedef struct {
   float output_percent;
   uint32_t reference_step_count;
   uint8_t open_loop_stage;
+  motor_controller_mode_t mode;
   bool high_reference_active;
   bool open_loop_test_started;
   bool previous_speed_valid;
@@ -37,15 +44,18 @@ typedef struct {
 /** Initialize the selected test profile and its controller state. */
 void motor_controller_init(motor_controller_t *controller);
 
-/** Start or restart the Kconfig-selected open-loop profile. */
+/** Start a fresh 600/900 RPM closed-loop experiment. */
+void motor_controller_start_closed_loop_test(motor_controller_t *controller);
+
+/** Start or restart the Kconfig-enabled calibration profile. */
 void motor_controller_start_open_loop_test(motor_controller_t *controller);
 
 /**
  * @brief Calculate the 1 kHz motor command.
  *
- * In the temporary open-loop test, output remains in COAST until explicitly
- * started, then follows the Kconfig-selected low/high/low profile and returns
- * to COAST. When disabled, reference alternates between 600 and 900 RPM.
+ * Output remains in COAST until a test is explicitly started. Closed-loop mode
+ * alternates the reference between 600 and 900 RPM. Calibration mode follows
+ * the Kconfig-selected low/high/low duty profile and returns to COAST.
  *
  * @param controller Private controller state.
  * @param measured_speed_rpm Kalman speed estimate in RPM.

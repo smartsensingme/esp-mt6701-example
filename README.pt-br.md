@@ -89,9 +89,10 @@ deve dividir exatamente 1 kHz e também pode ser escolhida pelo comando USB
 `ARM <rate_hz>`. Com cinco canais e 128 KiB são 13.107 amostras: 26,214 s a
 500 Hz ou 52,428 s a 250 Hz.
 
-A configuração diagnóstica atual habilita um perfil em malha aberta sincronizado
-com `ARM`. O motor permanece em `COAST` até esse comando, aplica 40%, 55% e 40%
-por 8 s cada e retorna a `COAST`. Os valores são configuráveis no Kconfig. Essa
+A configuração diagnóstica atual habilita um perfil em malha aberta solicitado
+por `CAL START`. O motor aplica 40%, 55% e 40% por 8 s cada e retorna a `COAST`.
+Um `ARM` comum inicia um novo ensaio em malha fechada com referências de
+600/900 RPM. Os valores são configuráveis no Kconfig. Essa
 duração permite incluir todos os patamares numa calibração a 500 Hz antes de o
 buffer encher.
 

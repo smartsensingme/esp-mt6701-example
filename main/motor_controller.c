@@ -13,7 +13,6 @@
  * Start conservatively. Adjust these three static variables and rebuild while
  * observing reference, error, P/I/D terms, and output in telemetry.
  */
-#if !CONFIG_APP_MOTOR_OPEN_LOOP_TEST
 static float pid_kp = 0.10f;
 static float pid_ki = 0.02f;
 static float pid_kd = 0.0f;
@@ -25,7 +24,8 @@ static float reference_step_period_s = 20.0f;
 
 /* Low-pass time constant applied before using the speed derivative. */
 static float derivative_filter_tau_s = 0.020f;
-#else
+
+#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
 /* Low/high/low stages followed by COAST, synchronized to recorder ARM. */
 static const float open_loop_duty_percent[] = {
     (float)CONFIG_APP_OPEN_LOOP_DUTY_LOW_PERCENT,
@@ -38,7 +38,6 @@ static const float open_loop_stage_period_s =
 #define MOTOR_OUTPUT_MIN_PERCENT 0.0f
 #define MOTOR_OUTPUT_MAX_PERCENT 100.0f
 
-#if !CONFIG_APP_MOTOR_OPEN_LOOP_TEST
 static float clamp(float value, float minimum, float maximum) {
   if (value < minimum) {
     return minimum;
@@ -48,20 +47,31 @@ static float clamp(float value, float minimum, float maximum) {
   }
   return value;
 }
-#endif
+
+static void reset_controller(motor_controller_t *controller,
+                             motor_controller_mode_t mode) {
+  *controller = (motor_controller_t){
+      .reference_rpm = reference_low_rpm,
+      .mode = mode,
+  };
+}
 
 void motor_controller_init(motor_controller_t *controller) {
-  *controller = (motor_controller_t){0};
-#if !CONFIG_APP_MOTOR_OPEN_LOOP_TEST
-  controller->reference_rpm = reference_low_rpm;
-#endif
+  if (controller != NULL) {
+    reset_controller(controller, MOTOR_CONTROLLER_MODE_IDLE);
+  }
+}
+
+void motor_controller_start_closed_loop_test(motor_controller_t *controller) {
+  if (controller != NULL) {
+    reset_controller(controller, MOTOR_CONTROLLER_MODE_CLOSED_LOOP);
+  }
 }
 
 void motor_controller_start_open_loop_test(motor_controller_t *controller) {
 #if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
   if (controller != NULL) {
-    controller->profile_elapsed_s = 0.0f;
-    controller->open_loop_stage = 0U;
+    reset_controller(controller, MOTOR_CONTROLLER_MODE_OPEN_LOOP_TEST);
     controller->open_loop_test_started = true;
   }
 #else
@@ -76,30 +86,32 @@ float motor_controller_update(motor_controller_t *controller,
   }
 
   bool valid_dt = dt > 0.0f && dt < 0.1f;
-#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
-  if (!controller->open_loop_test_started) {
+  if (controller->mode == MOTOR_CONTROLLER_MODE_IDLE) {
     controller->output_percent = 0.0f;
     return 0.0f;
   }
-  if (valid_dt && controller->open_loop_stage < 3U) {
-    controller->profile_elapsed_s += dt;
-    while (controller->profile_elapsed_s >= open_loop_stage_period_s &&
-           controller->open_loop_stage < 3U) {
-      controller->profile_elapsed_s -= open_loop_stage_period_s;
-      controller->open_loop_stage++;
+#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+  if (controller->mode == MOTOR_CONTROLLER_MODE_OPEN_LOOP_TEST) {
+    if (valid_dt && controller->open_loop_stage < 3U) {
+      controller->profile_elapsed_s += dt;
+      while (controller->profile_elapsed_s >= open_loop_stage_period_s &&
+             controller->open_loop_stage < 3U) {
+        controller->profile_elapsed_s -= open_loop_stage_period_s;
+        controller->open_loop_stage++;
+      }
     }
-  }
 
-  controller->reference_rpm = 0.0f;
-  controller->error_rpm = 0.0f;
-  controller->proportional_term = 0.0f;
-  controller->integral_term = 0.0f;
-  controller->derivative_term = 0.0f;
-  controller->output_percent =
-      open_loop_duty_percent[controller->open_loop_stage];
-  (void)measured_speed_rpm;
-  return controller->output_percent;
-#else
+    controller->reference_rpm = 0.0f;
+    controller->error_rpm = 0.0f;
+    controller->proportional_term = 0.0f;
+    controller->integral_term = 0.0f;
+    controller->derivative_term = 0.0f;
+    controller->output_percent =
+        open_loop_duty_percent[controller->open_loop_stage];
+    return controller->output_percent;
+  }
+#endif
+
   if (valid_dt) {
     controller->profile_elapsed_s += dt;
     while (controller->profile_elapsed_s >= reference_step_period_s) {
@@ -159,7 +171,6 @@ float motor_controller_update(motor_controller_t *controller,
   controller->output_percent = clamp(
       unsaturated_output, MOTOR_OUTPUT_MIN_PERCENT, MOTOR_OUTPUT_MAX_PERCENT);
   return controller->output_percent;
-#endif
 }
 
 void motor_controller_get_status(const motor_controller_t *controller,
@@ -177,13 +188,9 @@ void motor_controller_get_status(const motor_controller_t *controller,
       .output_percent = controller->output_percent,
       .reference_step_count = controller->reference_step_count,
       .open_loop_stage = controller->open_loop_stage,
-#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
-      .open_loop_test = true,
+      .open_loop_test =
+          controller->mode == MOTOR_CONTROLLER_MODE_OPEN_LOOP_TEST,
       .open_loop_test_started = controller->open_loop_test_started,
-#else
-      .open_loop_test = false,
-      .open_loop_test_started = false,
-#endif
   };
 }
 
@@ -193,12 +200,11 @@ bool motor_controller_get_next_reference_step(
   if (controller == NULL || seconds_remaining == NULL || step_id == NULL) {
     return false;
   }
-#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
-  return false;
-#else
+  if (controller->mode != MOTOR_CONTROLLER_MODE_CLOSED_LOOP) {
+    return false;
+  }
   float remaining = reference_step_period_s - controller->profile_elapsed_s;
   *seconds_remaining = remaining > 0.0f ? remaining : 0.0f;
   *step_id = controller->reference_step_count + 1U;
   return true;
-#endif
 }

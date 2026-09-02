@@ -32,6 +32,7 @@
 #include "mt6701.h"
 #include "realtime_telemetry.h"
 #include <math.h>
+#include <stdatomic.h>
 
 /* Core allocation: keep console/system work away from the control core. */
 #define CONTROL_CORE_ID 1
@@ -95,6 +96,34 @@ static realtime_loop_context_t loop_context;
 
 /* Written by the GPTimer ISR and read once by the awakened Core 1 task. */
 static volatile uint32_t last_timer_isr_time_us;
+
+typedef enum {
+  CAPTURE_REQUEST_NONE = 0,
+  CAPTURE_REQUEST_CLOSED_LOOP,
+  CAPTURE_REQUEST_CALIBRATION,
+} capture_request_t;
+
+static atomic_int pending_capture_request;
+
+static esp_err_t arm_capture_from_usb(uint32_t sample_rate_hz,
+                                      bool calibration_mode, void *context) {
+  (void)context;
+#if !CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+  if (calibration_mode) {
+    return ESP_ERR_NOT_SUPPORTED;
+  }
+#endif
+  capture_request_t request = calibration_mode ? CAPTURE_REQUEST_CALIBRATION
+                                               : CAPTURE_REQUEST_CLOSED_LOOP;
+  atomic_store_explicit(&pending_capture_request, request,
+                        memory_order_release);
+  esp_err_t error = esp_timeseries_arm(sample_rate_hz);
+  if (error != ESP_OK) {
+    atomic_store_explicit(&pending_capture_request, CAPTURE_REQUEST_NONE,
+                          memory_order_release);
+  }
+  return error;
+}
 
 enum {
   CAPTURE_CHANNEL_SPEED_RPM,
@@ -387,9 +416,7 @@ static void realtime_task(void *argument) {
 #if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
   uint32_t last_armed_step_id = 0U;
 #endif
-#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
   esp_timeseries_state_t previous_recorder_state = ESP_TIMESERIES_STATE_EMPTY;
-#endif
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_rt_diag_t diagnostics;
   esp_rt_diag_t *diagnostics_ptr = &diagnostics;
@@ -473,14 +500,19 @@ static void realtime_task(void *argument) {
 #if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
       arm_recorder_before_reference_step(&controller, &last_armed_step_id);
 #endif
-#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
       esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
       if (recorder_state == ESP_TIMESERIES_STATE_ARMED &&
           previous_recorder_state != ESP_TIMESERIES_STATE_ARMED) {
-        motor_controller_start_open_loop_test(&controller);
+        capture_request_t request = atomic_exchange_explicit(
+            &pending_capture_request, CAPTURE_REQUEST_NONE,
+            memory_order_acq_rel);
+        if (request == CAPTURE_REQUEST_CALIBRATION) {
+          motor_controller_start_open_loop_test(&controller);
+        } else if (request == CAPTURE_REQUEST_CLOSED_LOOP) {
+          motor_controller_start_closed_loop_test(&controller);
+        }
       }
       previous_recorder_state = recorder_state;
-#endif
 
       /* Kalman x[1] is deg/s; 360 deg/rev and 60 s/min give 1 RPM per 6 deg/s.
        */
@@ -538,6 +570,7 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
   }
 
   loop_context.motor = motor;
+  atomic_init(&pending_capture_request, CAPTURE_REQUEST_NONE);
 
   esp_err_t lut_err = esp_angle_lut_init();
   if (lut_err != ESP_OK && lut_err != ESP_ERR_INVALID_STATE) {
@@ -554,7 +587,11 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
     return recorder_err;
   }
 
-  esp_err_t err = esp_timeseries_usb_transport_start();
+  const esp_timeseries_usb_transport_config_t transport_config = {
+      .arm_handler = arm_capture_from_usb,
+      .arm_handler_context = NULL,
+  };
+  esp_err_t err = esp_timeseries_usb_transport_start(&transport_config);
   if (err != ESP_OK) {
     return err;
   }
