@@ -95,7 +95,8 @@ separate USB transport component. The native USB Serial/JTAG port accepts
 self-describing text header followed by little-endian binary samples protected
 by CRC-32/IEEE. See `tools/octave/README.md` for the receiver and plotting
 workflow. UART0 remains the firmware log/flash port so logs cannot enter the
-binary stream.
+binary stream. Run `ts_console()` in Octave for the guided port selection and
+recorder menus.
 
 ---
 

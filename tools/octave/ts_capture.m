@@ -12,7 +12,7 @@ function capture = ts_capture (port_name, output_file, clear_after, make_plot)
     make_plot = true;
   endif
 
-  load_instrument_control ();
+  ts_load_instrument_control ();
   device = [];
   unwind_protect
     device = serialport (port_name, 115200);
@@ -90,7 +90,7 @@ function capture = ts_capture (port_name, output_file, clear_after, make_plot)
       fprintf ("Saved %s\n", output_file);
     endif
     if (make_plot)
-      plot_capture (capture);
+      ts_plot_capture (capture);
     endif
     if (clear_after)
       write (device, uint8 (["CLEAR", char(10)]), "uint8");
@@ -163,33 +163,4 @@ function payload = read_exact (device, byte_count)
     payload(offset:last) = chunk;
     offset = last + 1;
   endwhile
-endfunction
-
-function plot_capture (capture)
-  channel_count = numel (capture.channels);
-  figure ("name", sprintf ("ESP32 capture %d", capture.capture_id));
-  for channel = 1:channel_count
-    subplot (channel_count, 1, channel);
-    plot (capture.time_s, capture.values(channel, :));
-    grid on;
-    ylabel (sprintf ("%s [%s]", capture.channels(channel).name, ...
-                     capture.channels(channel).unit));
-    if (channel == 1)
-      title (sprintf ("Capture %d at %g Hz", capture.capture_id, ...
-                      capture.sample_rate_hz));
-    endif
-  endfor
-  xlabel ("time [s]");
-endfunction
-
-function load_instrument_control ()
-  try
-    pkg load instrument-control;
-  catch
-    error (["The Octave instrument-control package is required. ", ...
-            "Install it with: pkg install -forge instrument-control"]);
-  end_try_catch
-  if (exist ("serialport", "file") == 0)
-    error ("instrument-control does not provide the serialport API");
-  endif
 endfunction

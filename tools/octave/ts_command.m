@@ -2,7 +2,7 @@ function response = ts_command (port_name, command)
   if (nargin != 2)
     print_usage ();
   endif
-  load_instrument_control ();
+  ts_load_instrument_control ();
   device = [];
   unwind_protect
     device = serialport (port_name, 115200);
@@ -16,16 +16,4 @@ function response = ts_command (port_name, command)
   unwind_protect_cleanup
     clear device;
   end_unwind_protect
-endfunction
-
-function load_instrument_control ()
-  try
-    pkg load instrument-control;
-  catch
-    error (["The Octave instrument-control package is required. ", ...
-            "Install it with: pkg install -forge instrument-control"]);
-  end_try_catch
-  if (exist ("serialport", "file") == 0)
-    error ("instrument-control does not provide the serialport API");
-  endif
 endfunction

@@ -97,7 +97,8 @@ Serial/JTAG nativa aceita `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR` e
 binárias little-endian protegidas por CRC-32/IEEE. Consulte
 `tools/octave/README.md` para receber, converter e plotar a captura. A UART0
 continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo
-binário.
+binário. Execute `ts_console()` no Octave para selecionar a porta e operar o
+gravador por menus guiados.
 
 ---
 

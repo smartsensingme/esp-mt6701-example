@@ -21,6 +21,16 @@ UART logs are physically separate from the capture stream.
 Examples:
 
     addpath("tools/octave")
+    ts_console()
+
+`ts_console` is the recommended interactive entry point. It loads
+instrument-control, lists the serial ports in a selection menu, displays the
+initial recorder status, and provides menus for `STATUS`, `DUMP`, `ARM`,
+`CLEAR`, `INFO`, `PING`, and `HELP`. After a valid DUMP, it saves a MAT file and
+opens one graph window per recorded channel.
+
+The lower-level functions remain available for automated experiments:
+
     ts_command("/dev/cu.usbmodem1101", "STATUS")
     ts_command("/dev/cu.usbmodem1101", "ARM 250")
     capture = ts_capture("/dev/cu.usbmodem1101", "capture.mat")
