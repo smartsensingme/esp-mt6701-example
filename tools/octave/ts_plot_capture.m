@@ -1,4 +1,4 @@
-function figure_handles = ts_plot_capture (capture)
+function figure_handle = ts_plot_capture (capture)
   if (nargin != 1)
     print_usage ();
   endif
@@ -7,27 +7,70 @@ function figure_handles = ts_plot_capture (capture)
     error ("Invalid capture structure");
   endif
 
-  channel_count = numel (capture.channels);
-  if (rows (capture.values) != channel_count)
-    error ("Capture channel metadata does not match the value matrix");
-  endif
+  speed_index = channel_index (capture, "speed");
+  current_index = channel_index (capture, "current");
+  control_index = channel_index (capture, "control");
+  reference_index = channel_index (capture, "reference");
+  time_s = capture.time_s;
+  speed = capture.values(speed_index, :);
+  reference = capture.values(reference_index, :);
+  control = capture.values(control_index, :);
+  current = capture.values(current_index, :);
 
-  figure_handles = zeros (channel_count, 1);
-  for channel = 1:channel_count
-    descriptor = capture.channels(channel);
-    window_name = sprintf ("Capture %d - %s", capture.capture_id, ...
-                           descriptor.name);
-    figure_handles(channel) = figure ("name", window_name, ...
-                                      "numbertitle", "off");
-    plot (capture.time_s, capture.values(channel, :), "linewidth", 1.1);
-    grid on;
-    xlabel ("time [s]");
-    if (isempty (descriptor.unit))
-      ylabel (descriptor.name);
-    else
-      ylabel (sprintf ("%s [%s]", descriptor.name, descriptor.unit));
-    endif
-    title (sprintf ("%s - capture %d at %g Hz", descriptor.name, ...
-                    capture.capture_id, capture.sample_rate_hz));
-  endfor
+  raw_current = [];
+  if (isfield (capture, "raw"))
+    raw_current = capture.raw(current_index, :);
+  endif
+  saturation_count = capture.channels(current_index).saturation_count;
+  [display_current, current_fault] = ts_condition_current_for_plot ( ...
+      current, raw_current, saturation_count);
+
+  figure_handle = figure ("name", ...
+      sprintf ("Captura de controle ESP32 %d", capture.capture_id), ...
+      "numbertitle", "off", "units", "normalized", ...
+      "position", [0.08, 0.06, 0.84, 0.86]);
+  axes_handles = zeros (4, 1);
+
+  axes_handles(1) = subplot (4, 1, 1);
+  plot (time_s, reference, "--", "linewidth", 1.2, ...
+        time_s, speed, "linewidth", 1.1);
+  grid on;
+  ylabel ("velocidade [rpm]");
+  legend ("referencia", "velocidade", "location", "northeast");
+  title (sprintf ("Captura %d a %g Hz", capture.capture_id, ...
+                  capture.sample_rate_hz));
+
+  axes_handles(2) = subplot (4, 1, 2);
+  plot (time_s, reference - speed, "linewidth", 1.1);
+  grid on;
+  ylabel ("erro [rpm]");
+
+  axes_handles(3) = subplot (4, 1, 3);
+  plot (time_s, control, "linewidth", 1.1);
+  grid on;
+  ylabel ("controle [%]");
+
+  axes_handles(4) = subplot (4, 1, 4);
+  plot (time_s, display_current, "linewidth", 1.1);
+  hold on;
+  if (any (current_fault))
+    plot (time_s(current_fault), display_current(current_fault), "ro", ...
+          "markersize", 6, "markerfacecolor", "r");
+    legend ("corrente", "amostra invalida/saturada", ...
+            "location", "northeast");
+  endif
+  hold off;
+  grid on;
+  ylabel ("corrente [A]");
+  xlabel ("tempo [s]");
+
+  linkaxes (axes_handles, "x");
+endfunction
+
+function index = channel_index (capture, name)
+  names = {capture.channels.name};
+  index = find (strcmpi (names, name), 1);
+  if (isempty (index))
+    error ("Capture does not contain the required '%s' channel", name);
+  endif
 endfunction

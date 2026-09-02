@@ -16,4 +16,16 @@ assert (values(1, 1) == 10);
 assert (values(2, 1) == 4);
 assert (isnan (values(1, 3)));
 
+[conditioned, faults] = ts_condition_current_for_plot ([1, NaN, 3], ...
+                                                        int16 ([1000, -32768, 3000]), ...
+                                                        0);
+assert (isequal (faults, logical ([0, 1, 0])));
+assert (isequal (conditioned, [1, 2, 3]));
+
+[conditioned, faults] = ts_condition_current_for_plot ([1, 32.767, 5], ...
+                                                        int16 ([1000, 32767, 5000]), ...
+                                                        1);
+assert (isequal (faults, logical ([0, 1, 0])));
+assert (isequal (conditioned, [1, 3, 5]));
+
 disp ("Offline Octave recorder tests passed");

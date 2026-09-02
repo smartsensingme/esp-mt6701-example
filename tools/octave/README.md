@@ -29,8 +29,11 @@ Examples:
 connection open, lists the ports, and provides a complete experiment action.
 That action sends `ARM`, polls `STATUS` every 500 ms, automatically starts
 `DUMP` on `FULL`, validates the CRC, saves a MAT file, and opens one graph
-window per recorded channel. Individual protocol operations remain in an
-advanced menu.
+with four linked panels: reference plus speed, speed error, control action, and
+current. Current samples explicitly marked invalid or saturated by the firmware
+are replaced for display by the mean of their valid neighbors and highlighted
+with a red circle. The saved raw and scaled data are never modified. Individual
+protocol operations remain in an advanced menu.
 
 The lower-level functions remain available for automated experiments:
 
