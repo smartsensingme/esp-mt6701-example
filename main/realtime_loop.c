@@ -17,6 +17,7 @@
 #include "driver/i2c_master.h"
 #include "engine_angle_kalman.h"
 #include "engine_current_sense.h"
+#include "esp_angle_lut.h"
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -74,6 +75,12 @@ _Static_assert(REALTIME_CONTROL_RATE_HZ %
 
 static const char *TAG = "REALTIME_LOOP";
 
+static uint16_t angle_degrees_to_counts(float angle_deg) {
+  return (uint16_t)lroundf(angle_deg *
+                           ((float)ESP_ANGLE_LUT_SENSOR_COUNTS / 360.0f)) &
+         (ESP_ANGLE_LUT_SENSOR_COUNTS - 1U);
+}
+
 /* Functional state owned exclusively by the Core 1 real-time task. */
 typedef struct {
   struct engine_config *motor;        /* Initialized MCPWM driver state. */
@@ -115,7 +122,7 @@ static const esp_timeseries_channel_t capture_channels[] = {
                                        .unit = "rpm",
                                        .scale = 0.1f,
                                        .offset = 0.0f},
-    [CAPTURE_CHANNEL_ANGLE_DEG] = {.name = "angle",
+    [CAPTURE_CHANNEL_ANGLE_DEG] = {.name = "angle_raw",
                                    .unit = "deg",
                                    .scale = 0.01f,
                                    .offset = 180.0f},
@@ -201,9 +208,14 @@ static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
   ESP_RETURN_ON_ERROR(
       mt6701_set_software_direction(&context->sensor, MT6701_DIR_CW), TAG,
       "Could not configure MT6701 direction");
+  float initial_raw_angle_deg = 0.0f;
   ESP_RETURN_ON_ERROR(
-      mt6701_get_last_angle_degrees(&context->sensor, initial_angle_deg), TAG,
-      "Could not get initial MT6701 angle");
+      mt6701_get_last_angle_degrees(&context->sensor, &initial_raw_angle_deg),
+      TAG, "Could not get initial MT6701 angle");
+  uint16_t initial_angle_counts =
+      angle_degrees_to_counts(initial_raw_angle_deg);
+  *initial_angle_deg =
+      mt6701_counts_to_degrees(esp_angle_lut_apply(initial_angle_counts));
 
   /*
    * Q values were originally tuned for a 1 kHz update. Scale their per-update
@@ -320,7 +332,9 @@ static void realtime_task(void *argument) {
   motor_controller_init(&controller);
 
   float measured_angle_deg = 0.0f;
+  float raw_angle_deg = 0.0f;
   esp_err_t err = initialize_sensor_and_filter(context, &measured_angle_deg);
+  raw_angle_deg = measured_angle_deg;
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Real-time initialization failed: %s", esp_err_to_name(err));
     engine_driver_set_speed(context->motor, 0.0f);
@@ -426,9 +440,12 @@ static void realtime_task(void *argument) {
        * get_last reads the value cached by mt6701_update(); it causes no second
        * I2C transaction. Reject pathological dt values after a long disruption.
        */
-      if (mt6701_get_last_angle_degrees(&context->sensor,
-                                        &measured_angle_deg) == ESP_OK &&
+      if (mt6701_get_last_angle_degrees(&context->sensor, &raw_angle_deg) ==
+              ESP_OK &&
           sample_dt > 0.0f && sample_dt < 0.1f) {
+        uint16_t raw_angle_counts = angle_degrees_to_counts(raw_angle_deg);
+        measured_angle_deg =
+            mt6701_counts_to_degrees(esp_angle_lut_apply(raw_angle_counts));
         engine_angle_kalman_3d_update(&context->filter, measured_angle_deg,
                                       sample_dt);
         esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_ESTIMATOR_UPDATE,
@@ -490,7 +507,7 @@ static void realtime_task(void *argument) {
           [CAPTURE_CHANNEL_CURRENT_A] = current_amperes,
           [CAPTURE_CHANNEL_CONTROL_PERCENT] = motor_output_percent,
           [CAPTURE_CHANNEL_REFERENCE_RPM] = controller_status.reference_rpm,
-          [CAPTURE_CHANNEL_ANGLE_DEG] = measured_angle_deg,
+          [CAPTURE_CHANNEL_ANGLE_DEG] = raw_angle_deg,
       };
       esp_timeseries_record_f32(capture_values, control_start_us);
       esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_CONTROL_UPDATE,
@@ -521,6 +538,11 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
   }
 
   loop_context.motor = motor;
+
+  esp_err_t lut_err = esp_angle_lut_init();
+  if (lut_err != ESP_OK && lut_err != ESP_ERR_INVALID_STATE) {
+    return lut_err;
+  }
 
   const esp_timeseries_config_t recorder_config = {
       .producer_rate_hz = REALTIME_CONTROL_RATE_HZ,

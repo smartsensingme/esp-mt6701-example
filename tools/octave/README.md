@@ -35,11 +35,38 @@ are replaced for display by the mean of their valid neighbors and highlighted
 with a red circle. The saved raw and scaled data are never modified. Individual
 protocol operations remain in an advanced menu.
 
-For an open-loop capture containing the raw `angle` channel, the panels change
+The console also provides an end-to-end MT6701 angular calibration assistant.
+It runs the synchronized 40/55/40 percent open-loop profile at 500 Hz, extracts
+complete steady-state revolutions, estimates a 256-bin cyclic correction LUT,
+and validates the result on alternating revolutions that were not used to fit
+the table. The result window shows the correction and phase error before/after.
+The MAT file contains both the original `capture` and calculated `calibration`.
+
+After user confirmation, Octave uploads the signed 14-bit-count corrections as
+binary, checks the IEEE CRC32, reads the table back byte-for-byte, and only then
+enables it. The firmware stores two versioned NVS slots so an interrupted write
+cannot replace the last valid table. New uploads start disabled. Calibration
+management in the console can inspect, enable, disable, read back, or erase the
+stored LUT.
+
+For an open-loop capture containing the raw `angle_raw` channel (legacy files
+named it `angle`), the panels change
 to speed, wrapped sensor angle, control duty, and current. The console prints
 the predicted/actual acquisition duration separately from the measured USB DUMP
 duration and KiB/s. With the current five-channel diagnostic build, select
-250 Hz to cover all three 15-second duty stages and the return to COAST.
+250 Hz for a long diagnostic trace. The calibration assistant uses 500 Hz and
+the calibration firmware profile uses three eight-second duty stages, returning
+to COAST before the five-channel 128 KiB buffer becomes full.
+
+Calibration protocol commands are also available directly:
+
+    ts_calibration_status(port)
+    installed = ts_calibration_read(port)
+    status = ts_calibration_write(port, calibration, true)
+
+The final argument above requests enablement only after CRC and readback
+verification. Firmware commands are `CAL STATUS`, `CAL WRITE`, `CAL READ`,
+`CAL ENABLE`, `CAL DISABLE`, and `CAL CLEAR`.
 
 The plot font size is configurable. Omitting it uses 12 points:
 

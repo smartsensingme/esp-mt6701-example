@@ -82,6 +82,10 @@ menu "Motor Test Profile"
         int "Open-loop stage duration (seconds)"
         depends on APP_MOTOR_OPEN_LOOP_TEST
         range 1 120
-        default 15
+        default 8
+        help
+            Eight seconds per stage lets a five-channel 500 Hz calibration
+            capture include low/high/low plateaus and return to COAST before
+            the 128 KiB recorder buffer becomes full.
 
 endmenu

@@ -1,5 +1,6 @@
 #include "engine_driver.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "realtime_loop.h"
 
 static const char *TAG = "APP_MAIN";
@@ -17,6 +18,14 @@ static struct engine_config motor = {
 
 void app_main(void) {
   ESP_LOGI(TAG, "MT6701: 4 kHz acquisition/Kalman, 1 kHz PID control loop");
+
+  esp_err_t nvs_error = nvs_flash_init();
+  if (nvs_error == ESP_ERR_NVS_NO_FREE_PAGES ||
+      nvs_error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    ESP_ERROR_CHECK(nvs_flash_erase());
+    nvs_error = nvs_flash_init();
+  }
+  ESP_ERROR_CHECK(nvs_error);
 
   /* MCPWM must be ready before the real-time task is allowed to command it. */
   ESP_LOGI(TAG, "Initializing H-Bridge motor driver...");

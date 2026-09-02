@@ -41,6 +41,8 @@ function exit_console = run_port_session (port_name)
     while (! change_port)
       choice = menu (sprintf ("Gravador ESP32 - %s", port_name), ...
                      "Executar ensaio completo", ...
+                     "Calibrar linearidade angular", ...
+                     "Gerenciar calibracao angular", ...
                      "Receber uma captura FULL", ...
                      "Atualizar status", ...
                      "Limpar o buffer cheio", ...
@@ -54,23 +56,27 @@ function exit_console = run_port_session (port_name)
         case 1
           run_complete_experiment (device);
         case 2
-          receive_full_capture (device);
+          run_angle_calibration (device);
         case 3
-          safe_command (device, "STATUS");
+          manage_angle_calibration (device);
         case 4
-          clear_capture (device);
+          receive_full_capture (device);
         case 5
+          safe_command (device, "STATUS");
+        case 6
+          clear_capture (device);
+        case 7
           rate_hz = choose_rate ();
           if (! isempty (rate_hz))
             safe_command (device, sprintf ("ARM %d", rate_hz));
           endif
-        case 6
-          safe_command (device, "INFO");
-        case 7
-          safe_command (device, "PING");
         case 8
-          safe_command (device, "HELP");
+          safe_command (device, "INFO");
         case 9
+          safe_command (device, "PING");
+        case 10
+          safe_command (device, "HELP");
+        case 11
           change_port = true;
         otherwise
           exit_console = true;
@@ -257,8 +263,135 @@ function download_capture (device, output_file, clear_after)
   fprintf ("Recebendo a captura binaria...\n");
   capture = ts_capture (device, output_file, clear_after, false);
   ts_plot_capture (capture);
-  fprintf ("Foram abertas %d janelas, uma para cada canal.\n", ...
-           numel (capture.channels));
+  fprintf ("Foi aberta uma figura com os canais da captura.\n");
+endfunction
+
+function run_angle_calibration (device)
+  try
+    firmware_calibration = ts_calibration_status (device, false);
+    status = ts_command (device, "STATUS", false);
+    require_status (status);
+    state = response_field (status, "state");
+    if (strcmp (state, "ARMED") || strcmp (state, "CAPTURING"))
+      error ("Ja existe uma captura %s em andamento", state);
+    elseif (strcmp (state, "FULL"))
+      choice = menu ("O buffer contem uma captura que sera substituida", ...
+                     "Cancelar", "Limpar e continuar");
+      if (choice != 2)
+        return;
+      endif
+      response = ts_command (device, "CLEAR", false);
+      require_ok (response, "CLEAR");
+    endif
+
+    choice = menu (["O motor executara 40%, 55% e 40% em malha aberta, ", ...
+                    "oito segundos por patamar. Mantenha o eixo livre."], ...
+                   "Cancelar", "Iniciar calibracao a 500 Hz");
+    if (choice != 2)
+      return;
+    endif
+    output_file = ["calibration_capture_", ...
+                   datestr(now (), "yyyymmdd_HHMMSS"), ".mat"];
+    entered = strtrim (input (sprintf ("Arquivo de calibracao [%s]: ", ...
+                                      output_file), "s"));
+    if (! isempty (entered))
+      output_file = entered;
+    endif
+
+    response = ts_command (device, "ARM 500", false);
+    require_ok (response, "ARM");
+    fprintf ("%s\n", response);
+    if (! wait_until_full (device))
+      return;
+    endif
+    fprintf ("Recebendo dados brutos de calibracao...\n");
+    capture = ts_capture (device, "", true, false);
+    calibration = ts_calculate_angle_lut (capture, ...
+                                          firmware_calibration.bin_count);
+    save ("-mat7-binary", output_file, "capture", "calibration");
+    fprintf ("Captura e LUT salvas em %s\n", output_file);
+    fprintf (["Validacao da velocidade instantanea: %.2f -> %.2f rpm RMS ", ...
+              "(reducao %.1f%%).\n"], calibration.raw_speed_rms_rpm, ...
+             calibration.corrected_speed_rms_rpm, ...
+             calibration.speed_reduction_percent);
+    fprintf ("LUT: %d pontos, %d voltas, CRC %08X.\n", ...
+             calibration.bin_count, calibration.revolution_count, ...
+             calibration.payload_crc32);
+    ts_plot_calibration (calibration);
+
+    if (calibration.speed_reduction_percent < 50 || ...
+        calibration.reduction_percent <= 0)
+      fprintf (2, ["A validacao nao atingiu os limites recomendados. ", ...
+                   "Inspecione o grafico antes de enviar.\n"]);
+    endif
+    choice = menu ("Resultado da calibracao", ...
+                   "Manter somente no arquivo MAT", ...
+                   "Enviar, verificar e habilitar no ESP32", ...
+                   "Descartar do ESP32");
+    if (choice == 2)
+      installed = ts_calibration_write (device, calibration, true);
+      fprintf (["Calibracao instalada e verificada: geracao %d, ", ...
+                "CRC %08X, habilitada=%d.\n"], ...
+               installed.generation, installed.payload_crc32, ...
+               installed.enabled);
+    endif
+  catch err
+    fprintf (2, "Falha na calibracao angular: %s\n", err.message);
+    fprintf (2, "Uma calibracao valida anterior nao foi sobrescrita sem CRC.\n");
+  end_try_catch
+endfunction
+
+function manage_angle_calibration (device)
+  while (true)
+    try
+      status = ts_calibration_status (device, false);
+      title_text = sprintf (["Calibracao: carregada=%d habilitada=%d ", ...
+                            "geracao=%d CRC=%08X"], status.loaded, ...
+                           status.enabled, status.generation, ...
+                           status.payload_crc32);
+    catch err
+      fprintf (2, "Nao foi possivel consultar a calibracao: %s\n", ...
+               err.message);
+      return;
+    end_try_catch
+    choice = menu (title_text, "Atualizar status", "Habilitar LUT", ...
+                   "Desabilitar LUT", "Ler e salvar LUT", ...
+                   "Apagar calibracao", "Voltar");
+    try
+      switch (choice)
+        case 1
+          fprintf ("%s\n", status.response);
+        case 2
+          safe_command (device, "CAL ENABLE");
+        case 3
+          safe_command (device, "CAL DISABLE");
+        case 4
+          calibration = ts_calibration_read (device);
+          filename = ["angle_lut_", datestr(now (), "yyyymmdd_HHMMSS"), ...
+                      ".mat"];
+          save ("-mat7-binary", filename, "calibration");
+          fprintf ("LUT lida com CRC %08X e salva em %s\n", ...
+                   calibration.payload_crc32, filename);
+          figure ("name", "LUT armazenada", "numbertitle", "off");
+          angle = (0:(calibration.bin_count - 1)) * ...
+                  360 / calibration.bin_count;
+          plot (angle, calibration.correction_deg, "linewidth", 1.3);
+          grid on;
+          xlabel ("angulo bruto [deg]");
+          ylabel ("correcao [deg]");
+        case 5
+          confirm = menu ("Apagar permanentemente a calibracao do ESP32?", ...
+                          "Cancelar", "Apagar");
+          if (confirm == 2)
+            safe_command (device, "CAL CLEAR");
+          endif
+        otherwise
+          return;
+      endswitch
+    catch err
+      fprintf (2, "Operacao de calibracao falhou: %s\n", err.message);
+    end_try_catch
+  endwhile
 endfunction
 
 function [output_file, clear_after, accepted] = capture_options ()

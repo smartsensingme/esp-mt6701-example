@@ -28,4 +28,30 @@ assert (isequal (conditioned, [1, 2, 3]));
 assert (isequal (faults, logical ([0, 1, 0])));
 assert (isequal (conditioned, [1, 3, 5]));
 
+fs = 500;
+t = (0:(24 * fs - 1)) / fs;
+speed_rpm = [613 * ones(1, 8 * fs), 887 * ones(1, 8 * fs), ...
+             619 * ones(1, 8 * fs)];
+true_turns = cumsum (speed_rpm / 60 / fs);
+true_angle = mod (true_turns * 360, 360);
+measured_angle = mod (true_angle + 0.8 * sin (2 * true_angle * pi / 180) + ...
+                      0.45 * sin (4 * true_angle * pi / 180), 360);
+control = [40 * ones(1, 8 * fs), 55 * ones(1, 8 * fs), ...
+           40 * ones(1, 8 * fs)];
+synthetic = struct ();
+synthetic.capture_id = 99;
+synthetic.sample_rate_hz = fs;
+synthetic.time_s = t;
+synthetic.channels = struct ("name", {"angle_raw", "control"}, ...
+                             "unit", {"deg", "percent"});
+synthetic.values = [measured_angle; control];
+calibration = ts_calculate_angle_lut (synthetic, 256);
+assert (calibration.speed_reduction_percent > 70);
+assert (calibration.payload_crc32 == ...
+        ts_crc32_ieee (ts_int16_le_bytes (calibration.correction_counts)));
+corrected = ts_apply_angle_lut (measured_angle, ...
+                                calibration.correction_counts);
+phase_error = mod (corrected - true_angle + 180, 360) - 180;
+assert (sqrt (mean (phase_error .^ 2)) < 0.15);
+
 disp ("Offline Octave recorder tests passed");

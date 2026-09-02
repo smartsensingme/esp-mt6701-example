@@ -91,13 +91,23 @@ deve dividir exatamente 1 kHz e também pode ser escolhida pelo comando USB
 
 A configuração diagnóstica atual habilita um perfil em malha aberta sincronizado
 com `ARM`. O motor permanece em `COAST` até esse comando, aplica 40%, 55% e 40%
-por 15 s cada e retorna a `COAST`. Os valores são configuráveis no Kconfig.
+por 8 s cada e retorna a `COAST`. Os valores são configuráveis no Kconfig. Essa
+duração permite incluir todos os patamares numa calibração a 500 Hz antes de o
+buffer encher.
+
+O componente reutilizável `esp_angle_lut` corrige o ângulo de 14 bits do MT6701
+antes do estimador de Kalman. As 256 correções em contagens do sensor são
+interpoladas no caminho de 4 kHz e armazenadas em dois slots NVS protegidos por
+CRC. O console Octave realiza o ensaio, calcula e valida a LUT, envia os dados
+binários, verifica a leitura de volta e só então a habilita. O canal registrado
+`angle_raw` permanece sempre sem correção, impedindo que uma recalibração
+aprenda a LUT anterior.
 
 Quando o buffer enche, permanece imutável em `FULL` até `CLEAR`. A API já expõe
 metadados, endereços, escalas, contadores de saturação/valores inválidos e uma
 visão estável do payload ao componente separado de transporte USB. A porta USB
-Serial/JTAG nativa aceita `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR` e
-`HELP`. `DUMP` envia um cabeçalho texto autodescritivo seguido das amostras
+Serial/JTAG nativa aceita `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`,
+`CAL ...` e `HELP`. `DUMP` envia um cabeçalho texto autodescritivo seguido das amostras
 binárias little-endian protegidas por CRC-32/IEEE. Consulte
 `tools/octave/README.md` para receber, converter e plotar a captura. A UART0
 continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo

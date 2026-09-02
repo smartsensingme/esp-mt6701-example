@@ -90,12 +90,21 @@ and can also be selected with the USB command `ARM <rate_hz>`. Five channels in
 
 The current diagnostic build enables an ARM-synchronized open-loop profile.
 The motor remains in COAST until `ARM`, then runs 40%, 55%, and 40% duty for
-15 s each before returning to COAST. These values are configurable in Kconfig.
+8 s each before returning to COAST. These values are configurable in Kconfig.
+The duration lets a 500 Hz calibration include all plateaus before the buffer
+fills.
+
+The reusable `esp_angle_lut` component corrects the 14-bit MT6701 angle before
+the Kalman estimator. Its 256 signed-count entries are linearly interpolated in
+the 4 kHz path and stored in two CRC-protected NVS slots. The Octave console can
+run the calibration capture, fit and validate the LUT, upload it as binary,
+verify a readback, and then enable it. The recorded `angle_raw` channel always
+remains uncorrected so a later calibration never learns the previous LUT.
 
 A full buffer stays immutable until `CLEAR`. Metadata, addresses, scaling,
 saturation/invalid counters, and a stable payload view are exposed to the
 separate USB transport component. The native USB Serial/JTAG port accepts
-`PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`, and `HELP`. `DUMP` returns a
+`PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`, `CAL ...`, and `HELP`. `DUMP` returns a
 self-describing text header followed by little-endian binary samples protected
 by CRC-32/IEEE. See `tools/octave/README.md` for the receiver and plotting
 workflow. UART0 remains the firmware log/flash port so logs cannot enter the

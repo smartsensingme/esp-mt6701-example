@@ -11,6 +11,11 @@ Commands are newline terminated:
 - ARM followed by a sample rate in Hz
 - DUMP
 - CLEAR
+- CAL STATUS
+- CAL WRITE followed by bin count and hexadecimal CRC32
+- CAL READ
+- CAL ENABLE or CAL DISABLE
+- CAL CLEAR
 - HELP
 
 `INFO` and `STATUS` return one `OK` line with the state, rates, channel count,
@@ -23,6 +28,12 @@ END-HEADER plus LF, immediately followed by exactly payload_bytes of
 sample-interleaved, little-endian int16 data. payload_crc32 is CRC-32/IEEE of
 the complete binary payload. A failed or disconnected transfer does not clear
 the recorder; the host can request DUMP again.
+
+`CAL WRITE` replies with `state=READY` before receiving the exact binary
+little-endian `int16` LUT payload. The firmware validates its CRC, correction
+bounds, and cyclic monotonicity, commits it to the inactive NVS slot, and leaves
+it disabled. `CAL READ` returns an `ANGLELUT/1` text header followed by the
+binary table. This supports host readback verification before `CAL ENABLE`.
 
 The two board connectors have separate roles:
 

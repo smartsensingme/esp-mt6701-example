@@ -10,6 +10,7 @@
 #endif
 
 #include "driver/usb_serial_jtag.h"
+#include "esp_angle_lut.h"
 #include "esp_crc.h"
 #include "esp_log.h"
 #include "esp_timeseries_recorder.h"
@@ -54,6 +55,21 @@ static esp_err_t usb_send_all(const void *data, size_t length) {
     }
     cursor += (size_t)written;
     length -= (size_t)written;
+  }
+  return ESP_OK;
+}
+
+static esp_err_t usb_read_all(void *data, size_t length) {
+  uint8_t *cursor = (uint8_t *)data;
+  while (length > 0U) {
+    int received = usb_serial_jtag_read_bytes(
+        cursor, length,
+        pdMS_TO_TICKS(CONFIG_ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS));
+    if (received <= 0) {
+      return ESP_ERR_TIMEOUT;
+    }
+    cursor += (size_t)received;
+    length -= (size_t)received;
   }
   return ESP_OK;
 }
@@ -194,6 +210,131 @@ static bool parse_arm_rate(const char *line, uint32_t *rate_hz) {
   return true;
 }
 
+static void send_calibration_status(const char *command) {
+  esp_angle_lut_status_t status;
+  esp_angle_lut_get_status(&status);
+  usb_sendf("OK command=%s protocol=%u loaded=%u enabled=%u format=%u "
+            "bins=%u generation=%" PRIu32 " crc32=%08" PRIX32 "\n",
+            command, PROTOCOL_VERSION, status.loaded, status.enabled,
+            status.format_version, status.bin_count, status.generation,
+            status.payload_crc32);
+}
+
+static bool parse_cal_write(const char *line, size_t *bin_count,
+                            uint32_t *payload_crc32) {
+  unsigned long parsed_bins = 0UL;
+  unsigned long parsed_crc = 0UL;
+  char extra = '\0';
+  int fields =
+      sscanf(line, "CAL WRITE %lu %lx %c", &parsed_bins, &parsed_crc, &extra);
+  if (fields != 2 || parsed_bins > SIZE_MAX || parsed_crc > UINT32_MAX) {
+    return false;
+  }
+  *bin_count = (size_t)parsed_bins;
+  *payload_crc32 = (uint32_t)parsed_crc;
+  return true;
+}
+
+static void receive_calibration(size_t bin_count, uint32_t payload_crc32) {
+  if (bin_count != ESP_ANGLE_LUT_BIN_COUNT) {
+    send_error("CAL_WRITE", ESP_ERR_INVALID_SIZE, "unexpected_bin_count");
+    return;
+  }
+  esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
+  if (recorder_state == ESP_TIMESERIES_STATE_ARMED ||
+      recorder_state == ESP_TIMESERIES_STATE_CAPTURING) {
+    send_error("CAL_WRITE", ESP_ERR_INVALID_STATE, "capture_in_progress");
+    return;
+  }
+
+  int16_t corrections[ESP_ANGLE_LUT_BIN_COUNT];
+  esp_err_t error =
+      usb_sendf("OK command=CAL_WRITE state=READY bytes=%zu bins=%zu\n",
+                sizeof(corrections), bin_count);
+  if (error == ESP_OK) {
+    error = usb_read_all(corrections, sizeof(corrections));
+  }
+  if (error == ESP_OK) {
+    error = esp_angle_lut_install(corrections, bin_count, payload_crc32);
+  }
+  if (error != ESP_OK) {
+    send_error("CAL_WRITE", error,
+               error == ESP_ERR_TIMEOUT       ? "payload_timeout"
+               : error == ESP_ERR_INVALID_CRC ? "crc_mismatch"
+                                              : "invalid_lut");
+    return;
+  }
+  send_calibration_status("CAL_WRITE");
+}
+
+static void send_calibration(void) {
+  int16_t corrections[ESP_ANGLE_LUT_BIN_COUNT];
+  esp_angle_lut_status_t status;
+  esp_err_t error =
+      esp_angle_lut_read(corrections, ESP_ANGLE_LUT_BIN_COUNT, &status);
+  if (error != ESP_OK) {
+    send_error("CAL_READ", error, "calibration_not_loaded");
+    return;
+  }
+  error = usb_sendf("ANGLELUT/%u\n", ESP_ANGLE_LUT_FORMAT_VERSION);
+  if (error == ESP_OK) {
+    error = usb_sendf("bins=%u\n", status.bin_count);
+  }
+  if (error == ESP_OK) {
+    error = usb_sendf("generation=%" PRIu32 "\n", status.generation);
+  }
+  if (error == ESP_OK) {
+    error = usb_sendf("enabled=%u\n", status.enabled);
+  }
+  if (error == ESP_OK) {
+    error = usb_sendf("encoding=int16\nbyte_order=little-endian\n");
+  }
+  if (error == ESP_OK) {
+    error = usb_sendf("payload_bytes=%zu\npayload_crc32=%08" PRIX32
+                      "\nEND-HEADER\n",
+                      sizeof(corrections), status.payload_crc32);
+  }
+  if (error == ESP_OK) {
+    error = usb_send_all(corrections, sizeof(corrections));
+  }
+  if (error != ESP_OK) {
+    ESP_LOGW(TAG, "CAL READ interrupted: %s", esp_err_to_name(error));
+  }
+}
+
+static bool process_calibration_command(const char *line) {
+  if (strcasecmp(line, "CAL STATUS") == 0) {
+    send_calibration_status("CAL_STATUS");
+  } else if (strcasecmp(line, "CAL READ") == 0) {
+    send_calibration();
+  } else if (strcasecmp(line, "CAL ENABLE") == 0 ||
+             strcasecmp(line, "CAL DISABLE") == 0) {
+    bool enabled = strcasecmp(line, "CAL ENABLE") == 0;
+    esp_err_t error = esp_angle_lut_set_enabled(enabled);
+    if (error == ESP_OK) {
+      send_calibration_status(enabled ? "CAL_ENABLE" : "CAL_DISABLE");
+    } else {
+      send_error(enabled ? "CAL_ENABLE" : "CAL_DISABLE", error,
+                 "calibration_not_loaded");
+    }
+  } else if (strcasecmp(line, "CAL CLEAR") == 0) {
+    esp_err_t error = esp_angle_lut_clear();
+    if (error == ESP_OK) {
+      send_calibration_status("CAL_CLEAR");
+    } else {
+      send_error("CAL_CLEAR", error, "nvs_error");
+    }
+  } else {
+    size_t bin_count = 0U;
+    uint32_t crc32 = 0U;
+    if (!parse_cal_write(line, &bin_count, &crc32)) {
+      return false;
+    }
+    receive_calibration(bin_count, crc32);
+  }
+  return true;
+}
+
 static void process_command(const char *line) {
   if (strcasecmp(line, "PING") == 0) {
     usb_sendf("OK command=PING protocol=%u\n", PROTOCOL_VERSION);
@@ -210,7 +351,11 @@ static void process_command(const char *line) {
     }
   } else if (strcasecmp(line, "HELP") == 0) {
     usb_sendf("OK command=HELP commands=PING,INFO,STATUS,ARM_<hz>,DUMP,CLEAR "
+              "CAL_STATUS,CAL_WRITE,CAL_READ,CAL_ENABLE,CAL_DISABLE,CAL_CLEAR "
               "rate_rule=exact_divisor_of_producer_rate\n");
+  } else if (strncasecmp(line, "CAL ", 4U) == 0 &&
+             process_calibration_command(line)) {
+    return;
   } else {
     uint32_t rate_hz = 0U;
     if (parse_arm_rate(line, &rate_hz)) {

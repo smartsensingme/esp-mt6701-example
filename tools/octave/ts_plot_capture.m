@@ -22,7 +22,10 @@ function figure_handle = ts_plot_capture (capture, fontSize)
   reference = capture.values(reference_index, :);
   control = capture.values(control_index, :);
   current = capture.values(current_index, :);
-  angle_index = optional_channel_index (capture, "angle");
+  angle_index = optional_channel_index (capture, "angle_raw");
+  if (isempty (angle_index))
+    angle_index = optional_channel_index (capture, "angle");
+  endif
   open_loop_capture = ! isempty (angle_index) && all (reference == 0);
 
   raw_current = [];
