@@ -1,8 +1,10 @@
 #ifndef REALTIME_TELEMETRY_H_
 #define REALTIME_TELEMETRY_H_
 
+#include "engine_current_sense.h"
 #include "esp_err.h"
 #include "esp_rt_diagnostics.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 typedef enum {
@@ -37,6 +39,10 @@ typedef struct {
   /* Reusable timing/counter snapshot produced by esp_rt_diagnostics. */
   esp_rt_diag_snapshot_t diagnostics;
 
+  /* Application-owned R_IS acquisition statistics for the same window. */
+  engine_current_sense_snapshot_t current_sense;
+  engine_current_sense_frame_t current_frame;
+
   /* Application-owned instantaneous state captured at publication time. */
   int32_t total_turns;
   float measured_angle_deg;
@@ -49,6 +55,8 @@ typedef struct {
   float pid_integral_term;
   float pid_derivative_term;
   float motor_output_percent;
+  uint8_t open_loop_stage;
+  bool open_loop_test;
 } realtime_telemetry_snapshot_t;
 
 /**

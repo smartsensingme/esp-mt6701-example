@@ -64,16 +64,30 @@ static void log_snapshot(const realtime_telemetry_snapshot_t *telemetry,
            diagnostics->max_processing_time_us, diagnostics->max_cycle_time_us,
            diagnostics->lifetime_max_processing_time_us,
            diagnostics->stages[REALTIME_DIAG_STAGE_SNAPSHOT].max_duration_us);
-  ESP_LOGI(TAG,
-           "state[%s]: angle=%.3f/%.3f deg speed=%.3f RPM "
-           "accel=%.3f RPM/s turns=%" PRId32 " reference=%.1f RPM "
-           "error=%.1f RPM pid=%.2f/%.2f/%.2f%% output=%.1f%%",
-           window_class, telemetry->measured_angle_deg,
-           telemetry->estimated_angle_deg, telemetry->estimated_speed_rpm,
-           telemetry->estimated_acceleration_rpm_s, telemetry->total_turns,
-           telemetry->speed_reference_rpm, telemetry->speed_error_rpm,
-           telemetry->pid_proportional_term, telemetry->pid_integral_term,
-           telemetry->pid_derivative_term, telemetry->motor_output_percent);
+  if (telemetry->open_loop_test) {
+    const char *stage_name =
+        telemetry->open_loop_stage < 3U ? "DRIVE" : "COAST";
+    ESP_LOGI(TAG,
+             "state[%s]: angle=%.3f/%.3f deg speed=%.3f RPM "
+             "accel=%.3f RPM/s turns=%" PRId32 " mode=OPEN_LOOP stage=%" PRIu8
+             "(%s) output=%.1f%%",
+             window_class, telemetry->measured_angle_deg,
+             telemetry->estimated_angle_deg, telemetry->estimated_speed_rpm,
+             telemetry->estimated_acceleration_rpm_s, telemetry->total_turns,
+             telemetry->open_loop_stage + 1U, stage_name,
+             telemetry->motor_output_percent);
+  } else {
+    ESP_LOGI(TAG,
+             "state[%s]: angle=%.3f/%.3f deg speed=%.3f RPM "
+             "accel=%.3f RPM/s turns=%" PRId32 " reference=%.1f RPM "
+             "error=%.1f RPM pid=%.2f/%.2f/%.2f%% output=%.1f%%",
+             window_class, telemetry->measured_angle_deg,
+             telemetry->estimated_angle_deg, telemetry->estimated_speed_rpm,
+             telemetry->estimated_acceleration_rpm_s, telemetry->total_turns,
+             telemetry->speed_reference_rpm, telemetry->speed_error_rpm,
+             telemetry->pid_proportional_term, telemetry->pid_integral_term,
+             telemetry->pid_derivative_term, telemetry->motor_output_percent);
+  }
   ESP_LOGI(TAG,
            "interval[%s]: sample=%" PRIu32 "..%" PRIu32 " us control=%" PRIu32
            "..%" PRIu32 " us",
@@ -82,6 +96,102 @@ static void log_snapshot(const realtime_telemetry_snapshot_t *telemetry,
            diagnostics->intervals[REALTIME_DIAG_INTERVAL_SAMPLE].max_us,
            diagnostics->intervals[REALTIME_DIAG_INTERVAL_CONTROL].min_us,
            diagnostics->intervals[REALTIME_DIAG_INTERVAL_CONTROL].max_us);
+#if CONFIG_ENGINE_CURRENT_SENSE_ENABLE
+  int adc_average_mv = 0;
+  int adc_minimum_mv = 0;
+  int adc_maximum_mv = 0;
+  int normal_average_mv = 0;
+  const engine_current_sense_snapshot_t *current = &telemetry->current_sense;
+  bool voltage_valid =
+      current->samples > 0U &&
+      engine_current_sense_raw_to_millivolts(current->raw_average,
+                                             &adc_average_mv) == ESP_OK &&
+      engine_current_sense_raw_to_millivolts(current->raw_minimum,
+                                             &adc_minimum_mv) == ESP_OK &&
+      engine_current_sense_raw_to_millivolts(current->raw_maximum,
+                                             &adc_maximum_mv) == ESP_OK;
+  bool normal_current_valid =
+      current->normal_samples > 0U &&
+      engine_current_sense_raw_to_millivolts(current->normal_raw_average,
+                                             &normal_average_mv) == ESP_OK;
+  if (voltage_valid) {
+    float fault_percent =
+        current->samples > 0U
+            ? 100.0f * (float)current->fault_samples / (float)current->samples
+            : 0.0f;
+    if (current->fault_samples > 0U || current->fault_active) {
+      ESP_LOGW(TAG,
+               "I_IS[%s]: FAULT ADC=%d/%d/%d mV fault=%" PRIu32 "/%" PRIu32
+               " (%.1f%%) entries=%" PRIu32
+               " active=%s I_IS_max=%.2f mA normal_current=%s%.2f A "
+               "invalid=%" PRIu32 " overflow=%" PRIu32 " read_errors=%" PRIu32,
+               window_class, adc_average_mv, adc_minimum_mv, adc_maximum_mv,
+               current->fault_samples, current->samples, fault_percent,
+               current->fault_entries, current->fault_active ? "yes" : "no",
+               engine_current_sense_adc_to_i_is_milliamperes(adc_maximum_mv),
+               normal_current_valid ? "" : "n/a ",
+               normal_current_valid
+                   ? engine_current_sense_adc_to_amperes(normal_average_mv)
+                   : 0.0f,
+               current->invalid_results, current->pool_overflows,
+               current->read_errors);
+    } else {
+      ESP_LOGI(TAG,
+               "I_IS[%s]: normal ADC=%d/%d/%d mV current_equiv=%.2f A "
+               "samples=%" PRIu32 " invalid=%" PRIu32 " overflow=%" PRIu32
+               " read_errors=%" PRIu32 " (avg/min/max)",
+               window_class, adc_average_mv, adc_minimum_mv, adc_maximum_mv,
+               normal_current_valid
+                   ? engine_current_sense_adc_to_amperes(normal_average_mv)
+                   : 0.0f,
+               current->samples, current->invalid_results,
+               current->pool_overflows, current->read_errors);
+    }
+  } else {
+    ESP_LOGW(TAG,
+             "current[%s]: no calibrated R_IS samples; samples=%" PRIu32
+             " invalid=%" PRIu32 " overflow=%" PRIu32 " read_errors=%" PRIu32,
+             window_class, current->samples, current->invalid_results,
+             current->pool_overflows, current->read_errors);
+  }
+
+  const engine_current_sense_frame_t *frame = &telemetry->current_frame;
+  int frame_average_mv = 0;
+  int frame_median_mv = 0;
+  int frame_normal_average_mv = 0;
+  bool frame_valid = frame->samples > 0U &&
+                     engine_current_sense_raw_to_millivolts(
+                         frame->raw_average, &frame_average_mv) == ESP_OK &&
+                     engine_current_sense_raw_to_millivolts(
+                         frame->raw_median, &frame_median_mv) == ESP_OK;
+  if (frame_valid) {
+    bool frame_normal_valid =
+        frame->normal_samples > 0U &&
+        engine_current_sense_raw_to_millivolts(
+            frame->normal_raw_average, &frame_normal_average_mv) == ESP_OK;
+    if (frame->fault_samples > 0U || frame->fault_active) {
+      ESP_LOGW(
+          TAG,
+          "I_IS-frame[%s]: FAULT sequence=%" PRIu32
+          " ADC mean/median=%d/%d mV fault=%" PRIu32 "/%" PRIu32
+          " entries=%" PRIu32 " active=%s normal_current=%s%.2f A",
+          window_class, frame->sequence, frame_average_mv, frame_median_mv,
+          frame->fault_samples, frame->samples, frame->fault_entries,
+          frame->fault_active ? "yes" : "no", frame_normal_valid ? "" : "n/a ",
+          frame_normal_valid
+              ? engine_current_sense_adc_to_amperes(frame_normal_average_mv)
+              : 0.0f);
+    } else {
+      ESP_LOGI(TAG,
+               "I_IS-frame[%s]: normal sequence=%" PRIu32 " samples=%" PRIu32
+               " ADC mean/median=%d/%d mV current_equiv=%.2f/%.2f A",
+               window_class, frame->sequence, frame->samples, frame_average_mv,
+               frame_median_mv,
+               engine_current_sense_adc_to_amperes(frame_average_mv),
+               engine_current_sense_adc_to_amperes(frame_median_mv));
+    }
+  }
+#endif
 }
 
 static void telemetry_logger_task(void *argument) {

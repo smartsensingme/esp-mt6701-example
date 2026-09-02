@@ -14,7 +14,7 @@ The project is configured to run on the **ESP32-S3** microcontroller and consume
 
 The workspace is organized as follows:
 - **`components/esp-mt6701`**: Git submodule for the MT6701 14-bit magnetic encoder driver, utilizing the modern ESP-IDF master I2C driver (`driver/i2c_master.h`) and optimized to run strictly in read-only mode (software-driven offset and direction).
-- **`components/esp-engine-driver`**: Git submodule for the BTS7960 dual PWM H-bridge motor driver, utilizing the ESP32-S3's native high-performance **MCPWM** peripheral.
+- **`components/esp-engine-driver`**: Git submodule for the BTS7960 H-bridge driver, owning MCPWM and optional ADC1/DMA acquisition of `R_IS`.
 - **`components/kalman-filter-c`**: Git submodule pointing to the pure C Kalman Filter library.
 - **`components/esp_rt_diagnostics`**: Reusable development-time component for bounded timing statistics, event counters, deadlines, and immutable diagnostic snapshots. It does not record time series.
 - **`main/`**: Real-time application that reads the MT6701 and updates the Kalman filter at **4 kHz**, runs a speed PID at **1 kHz**, drives the H-bridge, and publishes telemetry every 5 seconds.
@@ -24,7 +24,7 @@ The workspace is organized as follows:
 | Responsibility | Location | Purpose |
 |---|---|---|
 | Acquisition and estimation | `realtime_loop.c` and `engine_angle_kalman.c` | Reads the sensor and estimates angle, speed, and acceleration at 4 kHz |
-| Control | `motor_controller.c` | Runs the 1 kHz PID and alternates the reference between 600 and 900 RPM every 10 s |
+| Control | `motor_controller.c` | Runs the 1 kHz PID and alternates the reference between 600 and 900 RPM every 20 s |
 | Instrumentation | `components/esp_rt_diagnostics` | Measures jitter, duration, errors, and deadline violations; does not log |
 | Telemetry | `realtime_telemetry.c` and `.h` | Owns the queue, copies results to Core 0, and prints them; does not control the motor |
 
@@ -63,6 +63,18 @@ These snapshots combine reusable timing diagnostics with an instantaneous,
 application-owned PID state. They are development diagnostics, not control
 time-series recording.
 
+### BTS7960 Current Measurement
+
+*   **`CONFIG_ENGINE_CURRENT_SENSE_ENABLE`** (Default: `y`): Enables continuous ADC1/DMA acquisition of `R_IS` inside the bridge driver.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`** (Default: `4`): ADC input after signal conditioning and protection.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`** (Default: `25000`): Conversion rate; each 1 ms frame has 25 samples and reports mean and median.
+*   Board, series, and pulldown resistance plus nominal `k_ILIS` are configurable.
+
+The measured board has 10 kΩ from `R_IS` to ground. The expected interface adds
+10 kΩ in series to the ADC, 1 kΩ from ADC to ground, 100 nF from ADC to ground,
+and external Schottky clamps to 3.3 V/GND. Read the component documentation
+before connecting the GPIO.
+
 ---
 
 ## ⚡ High-Speed Optimizations & Timing Accuracy
@@ -86,7 +98,7 @@ To support high rotational speeds (such as 30,000 RPM or more) and ensure maximu
 ### 4. Dual-Rate Scheduling
 *   A **GPTimer** generates an interrupt every 250 µs. The ISR only sends a direct notification to the real-time task; no I2C transaction or Kalman operation runs inside the interrupt.
 *   The MT6701 and the complete Kalman state (position, velocity, and acceleration) are updated at **4 kHz**.
-*   Every four samples, the PID calculates and applies a command limited to **0% through 100%**, resulting in a **1 kHz** control rate. For tuning experiments, the reference alternates between **600 and 900 RPM** every 10 seconds.
+*   Every four samples, the PID calculates and applies a command limited to **0% through 98%**, resulting in a **1 kHz** control rate. A zero command puts the bridge in `COAST`. For tuning experiments, the reference alternates between **600 and 900 RPM** every 20 seconds.
 *   A low-priority task on Core 0 receives telemetry every **5 seconds**. It preserves the window affected by the previous serial output and reports it beside the following quiet window, labeling them `log-affected` and `quiet`. Reports appear every **10 seconds** without hiding the instrumentation's own impact. No log formatting or output runs on Core 1 after GPTimer starts.
 
 ### 5. Real-Time Loop Isolation

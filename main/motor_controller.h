@@ -2,6 +2,7 @@
 #define MOTOR_CONTROLLER_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct {
   float reference_rpm;
@@ -13,6 +14,7 @@ typedef struct {
   float proportional_term;
   float derivative_term;
   float output_percent;
+  uint8_t open_loop_stage;
   bool high_reference_active;
   bool previous_speed_valid;
 } motor_controller_t;
@@ -24,18 +26,19 @@ typedef struct {
   float integral_term;
   float derivative_term;
   float output_percent;
+  uint8_t open_loop_stage;
+  bool open_loop_test;
 } motor_controller_status_t;
 
-/** Initialize PID state and select the low reference as the first step. */
+/** Initialize the selected test profile and its controller state. */
 void motor_controller_init(motor_controller_t *controller);
 
 /**
  * @brief Calculate the 1 kHz motor command.
  *
- * The reference alternates between two static values every ten seconds. Output
- * is limited to 0..100 percent for unidirectional speed control. Conditional
- * integration prevents windup, and the derivative is taken from the measured
- * speed so a reference step does not produce derivative kick.
+ * In the temporary open-loop test, the output runs at 60, 80, and 90 percent
+ * for 20 seconds each and then remains at zero (COAST). When that test is
+ * disabled in Kconfig, the reference alternates between 600 and 900 RPM.
  *
  * @param controller Private controller state.
  * @param measured_speed_rpm Kalman speed estimate in RPM.

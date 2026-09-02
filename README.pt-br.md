@@ -14,7 +14,7 @@ O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consom
 
 O espaço de trabalho está estruturado da seguinte forma:
 - **`components/esp-mt6701`**: Submódulo Git para o driver do sensor MT6701, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`) e otimizado para rodar estritamente como somente leitura (calibrações de offset e direção resolvidas em software).
-- **`components/esp-engine-driver`**: Submódulo Git para o driver de motor por ponte H BTS7960, utilizando o periférico de alta performance **MCPWM** nativo do ESP32-S3.
+- **`components/esp-engine-driver`**: Submódulo Git para o driver da ponte H BTS7960, responsável pelo MCPWM e pela aquisição opcional de `R_IS` com ADC1/DMA.
 - **`components/kalman-filter-c`**: Submódulo Git apontando para a biblioteca pura em C do Filtro de Kalman.
 - **`components/esp_rt_diagnostics`**: Componente reutilizável de desenvolvimento para estatísticas temporais limitadas, contadores de eventos, deadlines e snapshots imutáveis de diagnóstico. Não captura séries temporais.
 - **`main/`**: Aplicação em tempo real que lê o MT6701 e atualiza o Kalman a **4 kHz**, executa um PID de velocidade a **1 kHz**, comanda a ponte H e publica telemetria a cada 5 segundos.
@@ -24,7 +24,7 @@ O espaço de trabalho está estruturado da seguinte forma:
 | Responsabilidade | Onde está | Função |
 |---|---|---|
 | Aquisição e estimação | `realtime_loop.c` e `engine_angle_kalman.c` | Lê o sensor e estima ângulo, velocidade e aceleração a 4 kHz |
-| Controle | `motor_controller.c` | Executa PID a 1 kHz e alterna a referência entre 600 e 900 RPM a cada 10 s |
+| Controle | `motor_controller.c` | Executa PID a 1 kHz e alterna a referência entre 600 e 900 RPM a cada 20 s |
 | Instrumentação | `components/esp_rt_diagnostics` | Mede jitter, duração, erros e violações de deadline; não imprime |
 | Telemetria | `realtime_telemetry.c` e `.h` | Mantém a fila, copia os resultados para o Core 0 e imprime; não controla o motor |
 
@@ -63,6 +63,18 @@ Esses snapshots combinam diagnóstico temporal reutilizável com um estado
 instantâneo do PID definido pela aplicação. São diagnósticos de desenvolvimento,
 não uma captura de séries temporais do controle.
 
+### Medição de corrente da BTS7960
+
+*   **`CONFIG_ENGINE_CURRENT_SENSE_ENABLE`** (Padrão: `y`): Habilita ADC1 contínuo e DMA para `R_IS` dentro do driver da ponte.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`** (Padrão: `4`): Entrada ADC após o condicionamento e proteção.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`** (Padrão: `25000`): Taxa de conversão; cada frame de 1 ms contém 25 amostras e fornece média e mediana.
+*   As resistências da placa, série e pulldown, além da relação nominal `k_ILIS`, também são configuráveis.
+
+A placa medida possui 10 kΩ entre `R_IS` e GND. O circuito esperado adiciona
+10 kΩ em série até o ADC, 1 kΩ do ADC para GND, 100 nF do ADC para GND e clamps
+Schottky externos para 3,3 V/GND. Consulte a documentação do driver antes
+de conectar o GPIO.
+
 ---
 
 ## ⚡ Otimizações de Alta Velocidade & Precisão de Tempo
@@ -86,7 +98,7 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 ### 4. Agendamento em Duas Taxas
 *   Um **GPTimer** gera uma interrupção a cada 250 µs. A ISR apenas envia uma notificação direta para a tarefa de tempo real; nenhuma transação I2C ou operação do Kalman é executada dentro da interrupção.
 *   O MT6701 e o estado completo do Kalman (posição, velocidade e aceleração) são atualizados a **4 kHz**.
-*   A cada quatro amostras, o PID calcula e aplica um comando limitado entre **0% e 100%**, resultando em uma taxa de controle de **1 kHz**. Para ensaios de sintonia, a referência alterna entre **600 e 900 RPM** a cada 10 segundos.
+*   A cada quatro amostras, o PID calcula e aplica um comando limitado entre **0% e 98%**, resultando em uma taxa de controle de **1 kHz**. O comando zero coloca a ponte em `COAST`. Para ensaios de sintonia, a referência alterna entre **600 e 900 RPM** a cada 20 segundos.
 *   Uma tarefa de baixa prioridade no Core 0 recebe telemetria a cada **5 segundos**. Ela preserva a janela afetada pela impressão anterior e a exibe junto da janela silenciosa seguinte, identificando-as como `log-affected` e `quiet`. O relatório aparece a cada **10 segundos**, sem esconder o impacto da própria instrumentação. Nenhuma formatação ou impressão ocorre no Core 1 depois que o GPTimer é iniciado.
 
 ### 5. Isolamento do Loop de Tempo Real

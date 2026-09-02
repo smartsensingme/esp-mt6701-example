@@ -22,3 +22,16 @@ menu "Application I2C Configurations"
             SDA/SCL rise and fall times. Use 400000 as a conservative fallback.
 
 endmenu
+
+menu "Motor Test Profile"
+
+    config APP_MOTOR_OPEN_LOOP_TEST
+        bool "Run the 60/80/90 percent open-loop test"
+        default n
+        help
+            Temporarily bypass the speed PID and command 60, 80, and 90
+            percent duty for 20 seconds each. After the 90 percent stage the
+            motor remains in COAST until the board is restarted. Disable this
+            option to restore the alternating 600/900 RPM closed-loop profile.
+
+endmenu

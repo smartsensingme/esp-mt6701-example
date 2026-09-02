@@ -8,6 +8,7 @@ que cooperam, mas possuem responsabilidades e módulos diferentes:
 |---|---|---:|---:|---:|
 | Aquisição e estimação | Lê o MT6701 e atualiza o Kalman | Não | Não | Não |
 | Controle | Calcula e aplica a saída na ponte H | Sim | Não | Não |
+| Corrente | Adquire e agrega `R_IS` por ADC/DMA | Não | Não | Não |
 | Instrumentação | Mede duração, jitter, erros e deadlines | Não | Sim | Não |
 | Telemetria | Copia resultados e os apresenta ao usuário | Não | Não | Sim, somente no Core 0 |
 
@@ -34,8 +35,12 @@ flowchart LR
     K --> D{quarta amostra?}
     D -->|sim| C[Controlador\n1 kHz]
     C --> M[MCPWM / BTS7960\nmotor]
+    M --> RIS[R_IS condicionado]
+    RIS --> ADC[ADC1 / DMA\n25 kS/s]
+    ADC --> ADCT[Tarefa r_is_adc\nCore 0]
     RT --> INS[Instrumentação\ntempos e contadores]
     INS -->|snapshot a cada 5 s| Q[Fila de tamanho 1]
+    ADCT -->|acumulador no snapshot| Q
     Q --> LOG[telemetry_logger\nCore 0]
 ```
 
@@ -79,6 +84,18 @@ conhece MT6701, I2C, Kalman, PID ou motor e não cria fila, tarefa ou logger.
 em no-ops. O componente produz snapshots de diagnóstico por janela; ele não é
 um gravador de séries temporais.
 
+### `components/esp-engine-driver` — atuação e aquisição de `R_IS`
+
+Configura ADC1 em modo contínuo, DMA e um frame por milissegundo. A callback de
+interrupção apenas notifica `r_is_adc`, uma tarefa de prioridade baixa no Core
+0. Essa tarefa drena os frames, calcula média e mediana das 25 amostras de cada
+milissegundo e acumula média, mínimo, máximo e erros para o snapshot longo.
+Nenhuma conversão ADC bloqueante é executada em `motor_realtime`.
+
+Ao publicar telemetria, o Core 1 entra numa seção crítica curta somente para
+copiar e reiniciar o acumulador. A calibração ADC e os cálculos em volts/ampères
+ocorrem depois, no logger do Core 0.
+
 ### `main/realtime_telemetry.c` — transporte e apresentação
 
 Implementa tudo que não precisa pertencer ao caminho de controle:
@@ -87,7 +104,7 @@ Implementa tudo que não precisa pertencer ao caminho de controle:
 - recebe cópias de `realtime_telemetry_snapshot_t`;
 - substitui snapshots antigos sem bloquear o Core 1;
 - calcula as taxas efetivas da janela;
-- seleciona as janelas silenciosas;
+- classifica as janelas silenciosas e afetadas pelo próprio relatório;
 - formata e imprime todos os logs no Core 0.
 
 `realtime_telemetry.h` define o contrato entre os módulos. A telemetria recebe
@@ -102,9 +119,9 @@ float motor_controller_update(motor_controller_t *controller,
                               float measured_speed_rpm, float dt)
 ```
 
-A referência alterna automaticamente entre 600 e 900 RPM a cada 10 segundos.
+A referência alterna automaticamente entre 600 e 900 RPM a cada 20 segundos.
 A velocidade estimada pelo Kalman fecha a malha. A função calcula os termos P,
-I e D usando o `dt` real, limita a saída entre 0% e 100% e emprega anti-windup
+I e D usando o `dt` real, limita a saída entre 0% e 98% e emprega anti-windup
 condicional.
 
 Os ganhos são variáveis estáticas no início de `motor_controller.c`, para
@@ -292,8 +309,8 @@ referência ─► erro ─► PID ─► ponte H ─► motor ─► MT6701/Kal
                └──────────── velocidade estimada ◄─────────────┘
 ```
 
-A referência começa em 600 RPM e muda para 900 RPM após 10 segundos. Depois
-continua alternando a cada 10 segundos. O integrador não é zerado no degrau,
+A referência começa em 600 RPM e muda para 900 RPM após 20 segundos. Depois
+continua alternando a cada 20 segundos. O integrador não é zerado no degrau,
 preservando uma transição sem descontinuidade artificial na ação integral.
 
 Como os relatórios silenciosos aparecem aproximadamente em 5, 15, 25... s, o
@@ -453,6 +470,31 @@ Os intervalos mostram mínimo e máximo da janela identificada. Como nenhuma
 janela é descartada, um aumento nos totais pode ser localizado no relatório
 `log-affected` ou `quiet` correspondente.
 
+### Tensão `R_IS` e corrente equivalente
+
+```text
+current[quiet]: R_IS=1.232/0.011/3.410 V ADC=112/1/310 mV
+current_equiv=2.00 A samples=125000 invalid=0 overflow=0
+read_errors=0 (avg/min/max)
+current-frame[quiet]: sequence=5000 samples=25 ADC mean/median=112/109 mV
+current_equiv=2.00/1.95 A
+```
+
+- `R_IS`: tensão média, mínima e máxima reconstruída no pino do módulo;
+- `ADC`: os mesmos três valores medidos após o divisor e calibrados pelo eFuse;
+- `current_equiv`: corrente equivalente calculada com `k_ILIS=8500` e os
+  resistores configurados;
+- `samples`: conversões válidas acumuladas na janela;
+- `invalid`, `overflow` e `read_errors`: saúde do caminho ADC/DMA.
+- `current-frame`: último frame completo de 1 ms; apresenta média e mediana das
+  25 amostras. A média é a grandeza principal e a mediana é complementar.
+
+Com 10 kΩ na placa, 10 kΩ em série e 1 kΩ do ADC para GND, a transimpedância no
+ADC é 476,19 Ω, ou cerca de 56 mV/A nominal. O capacitor externo de 100 nF
+filtra o PWM. Assim, abaixo de 100% de duty, `current_equiv` é uma corrente
+equivalente ponderada pelo PWM; em 100% ela estima diretamente a corrente do
+motor. A tolerância de `k_ILIS` exige calibração contra um amperímetro.
+
 ## 10. Estruturas internas
 
 ### `realtime_loop_context_t`
@@ -493,6 +535,7 @@ temporização do perfil, termos P/D, saída e flags de inicialização.
 | `REALTIME_CONTROL_RATE_HZ` | 1000 Hz | frequência do controlador |
 | `SENSOR_PERIOD_US` | 250 µs | período e deadline do ciclo rápido |
 | `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` | 5000 ms | duração de cada janela |
+| `CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ` | 25 kHz | aquisição ADC contínua de `R_IS` |
 | `REALTIME_TASK_PRIORITY` | máxima - 1 | prioridade do caminho crítico |
 | `TELEMETRY_TASK_PRIORITY` | 1 | prioridade da apresentação de dados |
 
@@ -506,6 +549,7 @@ O clock I2C não é uma constante fixa no arquivo. Ele vem de
 | MT6701 e I2C | `motor_realtime`, Core 1 | acesso exclusivo |
 | Kalman | `motor_realtime`, Core 1 | logger recebe somente cópia |
 | MCPWM/motor | `motor_realtime`, Core 1 | inicializado antes no Core 0 |
+| ADC1/DMA de `R_IS` | `r_is_adc`, Core 0 | produtor contínuo; Core 1 só extrai snapshot |
 | `esp_rt_diag_t` | `motor_realtime`, Core 1 | acumulador single-writer, nunca compartilhado |
 | fila de telemetria | produtor Core 1 / consumidor Core 0 | capacidade 1, overwrite |
 | console | `telemetry_logger`, Core 0 | fora do caminho crítico |
@@ -542,6 +586,17 @@ continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
 - `CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING`: habilita etapas e intervalos;
 - `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`: duração de cada janela.
 
+### Corrente da BTS7960
+
+- `CONFIG_ENGINE_CURRENT_SENSE_ENABLE`: inclui ADC/DMA e o relatório;
+- `CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`: entrada ADC1 protegida, padrão GPIO4;
+- `CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`: padrão 25 kS/s;
+- resistores da placa, série e pulldown: padrões 10 kΩ, 10 kΩ e 1 kΩ;
+- `CONFIG_ENGINE_CURRENT_SENSE_RATIO`: `k_ILIS` nominal, padrão 8500.
+
+O esquema de condicionamento e suas limitações estão documentados em
+`components/esp-engine-driver/README.pt-br.md`.
+
 ## 14. Onde modificar cada comportamento
 
 | Objetivo | Local principal |
@@ -553,6 +608,7 @@ continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
 | Alterar período dos snapshots | `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` |
 | Mudar campos dos logs | `realtime_telemetry.h` e `realtime_telemetry.c` |
 | Adicionar etapa/evento/intervalo desta aplicação | enums em `realtime_telemetry.h` e chamadas `esp_rt_diag_*` |
+| Alterar aquisição/proteção de `R_IS` | `components/esp-engine-driver` |
 | Alterar pinos/clock | `idf.py menuconfig` |
 
 Ao implementar o PID, preserve a separação: o controlador deve calcular apenas

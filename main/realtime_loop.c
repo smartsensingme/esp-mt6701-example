@@ -16,6 +16,7 @@
 #include "driver/gptimer.h"
 #include "driver/i2c_master.h"
 #include "engine_angle_kalman.h"
+#include "engine_current_sense.h"
 #include "esp_attr.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -225,7 +226,13 @@ static void publish_telemetry_snapshot(realtime_loop_context_t *context,
       .pid_integral_term = controller_status.integral_term,
       .pid_derivative_term = controller_status.derivative_term,
       .motor_output_percent = controller_status.output_percent,
+      .open_loop_stage = controller_status.open_loop_stage,
+      .open_loop_test = controller_status.open_loop_test,
   };
+#if CONFIG_ENGINE_CURRENT_SENSE_ENABLE
+  engine_current_sense_take_snapshot(&telemetry.current_sense);
+  engine_current_sense_get_latest_frame(&telemetry.current_frame);
+#endif
   realtime_telemetry_publish(&telemetry);
   esp_rt_diag_stage_end(diagnostics, REALTIME_DIAG_STAGE_SNAPSHOT,
                         snapshot_start_us);
@@ -260,12 +267,31 @@ static void realtime_task(void *argument) {
            xPortGetCoreID(), REALTIME_SENSOR_RATE_HZ, REALTIME_CONTROL_RATE_HZ,
            CONFIG_APP_I2C_CLOCK_HZ, measured_angle_deg);
 
+#if CONFIG_ENGINE_CURRENT_SENSE_ENABLE
+  /*
+   * Start the 1 ms ADC frames immediately before the 4 kHz GPTimer. Both run
+   * independently, but this gives the current frames a stable initial phase
+   * relative to every fourth timer alarm without burdening the control path.
+   */
+  err = engine_current_sense_start();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Current acquisition initialization failed: %s",
+             esp_err_to_name(err));
+    engine_driver_set_speed(context->motor, 0.0f);
+    vTaskDelete(NULL);
+    return;
+  }
+#endif
+
   gptimer_handle_t sampling_timer = NULL;
   err = start_sampling_timer(xTaskGetCurrentTaskHandle(), &sampling_timer);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Sampling timer initialization failed: %s",
              esp_err_to_name(err));
     engine_driver_set_speed(context->motor, 0.0f);
+#if CONFIG_ENGINE_CURRENT_SENSE_ENABLE
+    engine_current_sense_stop();
+#endif
     vTaskDelete(NULL);
     return;
   }
@@ -361,7 +387,7 @@ static void realtime_task(void *argument) {
       motor_output_percent = motor_controller_update(
           &controller, estimated_speed_rpm,
           (float)control_dt_us * MICROSECONDS_TO_SECONDS);
-      /* Apply the saturated 0..100% command returned by the PID controller. */
+      /* Apply the 0..100% command; exactly zero selects COAST. */
       engine_driver_set_speed(context->motor, motor_output_percent);
       esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_CONTROL_UPDATE,
                         1U);
@@ -393,7 +419,11 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
   loop_context.motor = motor;
 
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
-  esp_err_t err = realtime_telemetry_start();
+  esp_err_t err;
+#endif
+
+#if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
+  err = realtime_telemetry_start();
   if (err != ESP_OK) {
     return err;
   }
