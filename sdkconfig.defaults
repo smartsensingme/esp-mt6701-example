@@ -22,6 +22,14 @@ CONFIG_ESP_RT_DIAGNOSTICS_ENABLE=y
 CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING=y
 CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS=5000
 
+# Reusable int16 time-series recorder: 128 KiB internal DRAM, four application
+# channels, automatic 500 Hz capture starting 1 s before each reference step.
+CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB=128
+CONFIG_ESP_TIMESERIES_RECORDER_MAX_CHANNELS=16
+CONFIG_APP_TIMESERIES_AUTO_CAPTURE=y
+CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ=500
+CONFIG_APP_TIMESERIES_PRETRIGGER_MS=1000
+
 # IBT-2 R_IS conditioning: the board's measured 10 kohm resistor remains in
 # place. Add 10 kohm from R_IS to GPIO4, 1 kohm from GPIO4 to GND, a capacitor
 # at GPIO4, and external 3.3 V/GND clamps. A series resistor alone is not a

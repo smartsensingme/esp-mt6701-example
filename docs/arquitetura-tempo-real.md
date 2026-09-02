@@ -84,6 +84,24 @@ conhece MT6701, I2C, Kalman, PID ou motor e não cria fila, tarefa ou logger.
 em no-ops. O componente produz snapshots de diagnóstico por janela; ele não é
 um gravador de séries temporais.
 
+### `components/esp_timeseries_recorder` — séries temporais `int16_t`
+
+Reserva em `.bss` uma região contínua de DRAM interna dimensionada por Kconfig.
+A aplicação informa em `esp_timeseries_init()` a taxa do produtor, o número de
+canais e, para cada canal, nome, unidade, escala e offset. A capacidade é
+`buffer_bytes / (2 * channel_count)`; bytes finais que não formem um registro
+completo não são utilizados.
+
+Cada chamada `esp_timeseries_arm(rate_hz)` escolhe a taxa daquela captura. Ela
+deve ser um divisor inteiro da taxa do produtor, garantindo espaçamento uniforme
+e custo determinístico. No caminho de 1 kHz, `esp_timeseries_record_f32()` só
+quantiza e escreve nos ciclos selecionados. Não aloca memória, imprime, calcula
+CRC nem executa transporte.
+
+Os estados são `EMPTY -> ARMED -> CAPTURING -> FULL -> EMPTY`. Somente `CLEAR`
+libera uma captura cheia. Isso permite que o futuro transporte USB repita um
+`DUMP` quando o CRC calculado pelo Octave não conferir.
+
 ### `components/esp-engine-driver` — atuação e aquisição de `R_IS`
 
 Configura ADC1 em modo contínuo, DMA e um frame por milissegundo. A callback de
@@ -536,6 +554,7 @@ temporização do perfil, termos P/D, saída e flags de inicialização.
 | `SENSOR_PERIOD_US` | 250 µs | período e deadline do ciclo rápido |
 | `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` | 5000 ms | duração de cada janela |
 | `CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ` | 25 kHz | aquisição ADC contínua de `R_IS` |
+| `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` | 128 KiB | buffer contínuo interno de séries temporais |
 | `REALTIME_TASK_PRIORITY` | máxima - 1 | prioridade do caminho crítico |
 | `TELEMETRY_TASK_PRIORITY` | 1 | prioridade da apresentação de dados |
 
@@ -550,6 +569,7 @@ O clock I2C não é uma constante fixa no arquivo. Ele vem de
 | Kalman | `motor_realtime`, Core 1 | logger recebe somente cópia |
 | MCPWM/motor | `motor_realtime`, Core 1 | inicializado antes no Core 0 |
 | ADC1/DMA de `R_IS` | `r_is_adc`, Core 0 | produtor contínuo; Core 1 só extrai snapshot |
+| buffer de séries temporais | escritor Core 1 / futuro leitor Core 0 | leitura apenas em `FULL`; liberação explícita |
 | `esp_rt_diag_t` | `motor_realtime`, Core 1 | acumulador single-writer, nunca compartilhado |
 | fila de telemetria | produtor Core 1 / consumidor Core 0 | capacidade 1, overwrite |
 | console | `telemetry_logger`, Core 0 | fora do caminho crítico |
@@ -586,6 +606,19 @@ continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
 - `CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING`: habilita etapas e intervalos;
 - `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`: duração de cada janela.
 
+### Séries temporais
+
+- `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB`: reserva estática, padrão 128 KiB;
+- `CONFIG_ESP_TIMESERIES_RECORDER_MAX_CHANNELS`: máximo de descritores, padrão 16;
+- `CONFIG_APP_TIMESERIES_AUTO_CAPTURE`: captura antes dos degraus;
+- `CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ`: padrão 500 Hz;
+- `CONFIG_APP_TIMESERIES_PRETRIGGER_MS`: padrão 1000 ms.
+
+O agendamento automático identifica cada próximo degrau. Depois de `CLEAR`, o
+mesmo degrau não é armado novamente; o firmware espera o identificador seguinte.
+A futura ordem USB `ARM <rate_hz>` poderá iniciar imediatamente sem depender do
+perfil automático.
+
 ### Corrente da BTS7960
 
 - `CONFIG_ENGINE_CURRENT_SENSE_ENABLE`: inclui ADC/DMA e o relatório;
@@ -608,6 +641,7 @@ O esquema de condicionamento e suas limitações estão documentados em
 | Alterar período dos snapshots | `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` |
 | Mudar campos dos logs | `realtime_telemetry.h` e `realtime_telemetry.c` |
 | Adicionar etapa/evento/intervalo desta aplicação | enums em `realtime_telemetry.h` e chamadas `esp_rt_diag_*` |
+| Alterar buffer/API de séries temporais | `components/esp_timeseries_recorder` |
 | Alterar aquisição/proteção de `R_IS` | `components/esp-engine-driver` |
 | Alterar pinos/clock | `idf.py menuconfig` |
 

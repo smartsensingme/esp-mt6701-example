@@ -8,6 +8,7 @@
 #include "realtime_telemetry.h"
 
 #include "esp_log.h"
+#include "esp_timeseries_recorder.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -192,6 +193,22 @@ static void log_snapshot(const realtime_telemetry_snapshot_t *telemetry,
     }
   }
 #endif
+
+  esp_timeseries_status_t recorder;
+  if (esp_timeseries_get_status(&recorder) == ESP_OK) {
+    float capacity_seconds =
+        recorder.sample_rate_hz > 0U
+            ? (float)recorder.sample_capacity / (float)recorder.sample_rate_hz
+            : 0.0f;
+    ESP_LOGI(TAG,
+             "recorder: state=%s id=%" PRIu32 " rate=%" PRIu32
+             " Hz samples=%zu/%zu "
+             "duration=%.3f s buffer=%zu bytes [0x%" PRIxPTR ",0x%" PRIxPTR ")",
+             esp_timeseries_state_name(recorder.state), recorder.capture_id,
+             recorder.sample_rate_hz, recorder.sample_count,
+             recorder.sample_capacity, capacity_seconds, recorder.buffer_bytes,
+             recorder.buffer_begin, recorder.buffer_end);
+  }
 }
 
 static void telemetry_logger_task(void *argument) {

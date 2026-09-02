@@ -22,12 +22,14 @@
 #include "esp_log.h"
 #include "esp_rt_diagnostics.h"
 #include "esp_timer.h"
+#include "esp_timeseries_recorder.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "kalman.h"
 #include "motor_controller.h"
 #include "mt6701.h"
 #include "realtime_telemetry.h"
+#include <math.h>
 
 /* Core allocation: keep console/system work away from the control core. */
 #define CONTROL_CORE_ID 1
@@ -42,6 +44,7 @@
 #define KALMAN_REFERENCE_RATE_HZ 1000.0f
 #define DEGREES_PER_SECOND_TO_RPM (1.0f / 6.0f)
 #define MICROSECONDS_TO_SECONDS (1.0f / 1000000.0f)
+#define MILLIAMPERES_TO_AMPERES (1.0f / 1000.0f)
 
 /* FreeRTOS task resources. */
 #define REALTIME_TASK_STACK_SIZE 4096U
@@ -61,6 +64,12 @@ _Static_assert(REALTIME_DIAG_EVENT_COUNT <= ESP_RT_DIAG_MAX_EVENTS,
                "Application declares too many diagnostic events");
 _Static_assert(REALTIME_DIAG_INTERVAL_COUNT <= ESP_RT_DIAG_MAX_INTERVALS,
                "Application declares too many diagnostic intervals");
+#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
+_Static_assert(REALTIME_CONTROL_RATE_HZ %
+                       CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ ==
+                   0,
+               "Automatic recorder rate must divide the control rate");
+#endif
 
 static const char *TAG = "REALTIME_LOOP";
 
@@ -78,6 +87,57 @@ static realtime_loop_context_t loop_context;
 
 /* Written by the GPTimer ISR and read once by the awakened Core 1 task. */
 static volatile uint32_t last_timer_isr_time_us;
+
+enum {
+  CAPTURE_CHANNEL_SPEED_RPM,
+  CAPTURE_CHANNEL_CURRENT_A,
+  CAPTURE_CHANNEL_CONTROL_PERCENT,
+  CAPTURE_CHANNEL_REFERENCE_RPM,
+  CAPTURE_CHANNEL_COUNT,
+};
+
+static const esp_timeseries_channel_t capture_channels[] = {
+    [CAPTURE_CHANNEL_SPEED_RPM] = {.name = "speed",
+                                   .unit = "rpm",
+                                   .scale = 0.1f,
+                                   .offset = 0.0f},
+    [CAPTURE_CHANNEL_CURRENT_A] = {.name = "current",
+                                   .unit = "A",
+                                   .scale = 0.001f,
+                                   .offset = 0.0f},
+    [CAPTURE_CHANNEL_CONTROL_PERCENT] = {.name = "control",
+                                         .unit = "percent",
+                                         .scale = 0.01f,
+                                         .offset = 0.0f},
+    [CAPTURE_CHANNEL_REFERENCE_RPM] = {.name = "reference",
+                                       .unit = "rpm",
+                                       .scale = 0.1f,
+                                       .offset = 0.0f},
+};
+
+#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
+static void
+arm_recorder_before_reference_step(const motor_controller_t *controller,
+                                   uint32_t *last_armed_step_id) {
+  if (esp_timeseries_get_state() != ESP_TIMESERIES_STATE_EMPTY) {
+    return;
+  }
+
+  float seconds_remaining = 0.0f;
+  uint32_t step_id = 0U;
+  if (!motor_controller_get_next_reference_step(controller, &seconds_remaining,
+                                                &step_id) ||
+      step_id == *last_armed_step_id ||
+      seconds_remaining >
+          (float)CONFIG_APP_TIMESERIES_PRETRIGGER_MS / 1000.0f) {
+    return;
+  }
+  if (esp_timeseries_arm(CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ) ==
+      ESP_OK) {
+    *last_armed_step_id = step_id;
+  }
+}
+#endif
 
 /* ============================ 4 KHZ SCHEDULER ============================ */
 
@@ -303,6 +363,9 @@ static void realtime_task(void *argument) {
   int64_t last_sample_time_us = esp_timer_get_time();
   int64_t last_control_time_us = last_sample_time_us;
   float motor_output_percent = 0.0f;
+#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
+  uint32_t last_armed_step_id = 0U;
+#endif
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_rt_diag_t diagnostics;
   esp_rt_diag_t *diagnostics_ptr = &diagnostics;
@@ -380,6 +443,10 @@ static void realtime_task(void *argument) {
                            control_dt_us);
       int64_t control_stage_start_us = esp_rt_diag_stage_begin();
 
+#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
+      arm_recorder_before_reference_step(&controller, &last_armed_step_id);
+#endif
+
       /* Kalman x[1] is deg/s; 360 deg/rev and 60 s/min give 1 RPM per 6 deg/s.
        */
       float estimated_speed_rpm =
@@ -389,6 +456,24 @@ static void realtime_task(void *argument) {
           (float)control_dt_us * MICROSECONDS_TO_SECONDS);
       /* Apply the 0..100% command; exactly zero selects COAST. */
       engine_driver_set_speed(context->motor, motor_output_percent);
+
+      motor_controller_status_t controller_status = {0};
+      motor_controller_get_status(&controller, &controller_status);
+      int32_t current_milliamps = 0;
+      float current_amperes = NAN;
+#if CONFIG_ENGINE_CURRENT_SENSE_ENABLE
+      if (engine_current_sense_get_latest_current_milliamps(
+              &current_milliamps)) {
+        current_amperes = (float)current_milliamps * MILLIAMPERES_TO_AMPERES;
+      }
+#endif
+      const float capture_values[CAPTURE_CHANNEL_COUNT] = {
+          [CAPTURE_CHANNEL_SPEED_RPM] = estimated_speed_rpm,
+          [CAPTURE_CHANNEL_CURRENT_A] = current_amperes,
+          [CAPTURE_CHANNEL_CONTROL_PERCENT] = motor_output_percent,
+          [CAPTURE_CHANNEL_REFERENCE_RPM] = controller_status.reference_rpm,
+      };
+      esp_timeseries_record_f32(capture_values, control_start_us);
       esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_CONTROL_UPDATE,
                         1U);
       esp_rt_diag_stage_end(diagnostics_ptr, REALTIME_DIAG_STAGE_CONTROL,
@@ -417,6 +502,16 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
   }
 
   loop_context.motor = motor;
+
+  const esp_timeseries_config_t recorder_config = {
+      .producer_rate_hz = REALTIME_CONTROL_RATE_HZ,
+      .channel_count = CAPTURE_CHANNEL_COUNT,
+      .channels = capture_channels,
+  };
+  esp_err_t recorder_err = esp_timeseries_init(&recorder_config);
+  if (recorder_err != ESP_OK) {
+    return recorder_err;
+  }
 
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_err_t err;

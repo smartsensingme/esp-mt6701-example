@@ -84,6 +84,7 @@ float motor_controller_update(motor_controller_t *controller,
     controller->profile_elapsed_s += dt;
     while (controller->profile_elapsed_s >= reference_step_period_s) {
       controller->profile_elapsed_s -= reference_step_period_s;
+      controller->reference_step_count++;
       controller->high_reference_active = !controller->high_reference_active;
       controller->reference_rpm = controller->high_reference_active
                                       ? reference_high_rpm
@@ -154,6 +155,7 @@ void motor_controller_get_status(const motor_controller_t *controller,
       .integral_term = controller->integral_term,
       .derivative_term = controller->derivative_term,
       .output_percent = controller->output_percent,
+      .reference_step_count = controller->reference_step_count,
       .open_loop_stage = controller->open_loop_stage,
 #if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
       .open_loop_test = true,
@@ -161,4 +163,20 @@ void motor_controller_get_status(const motor_controller_t *controller,
       .open_loop_test = false,
 #endif
   };
+}
+
+bool motor_controller_get_next_reference_step(
+    const motor_controller_t *controller, float *seconds_remaining,
+    uint32_t *step_id) {
+  if (controller == NULL || seconds_remaining == NULL || step_id == NULL) {
+    return false;
+  }
+#if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
+  return false;
+#else
+  float remaining = reference_step_period_s - controller->profile_elapsed_s;
+  *seconds_remaining = remaining > 0.0f ? remaining : 0.0f;
+  *step_id = controller->reference_step_count + 1U;
+  return true;
+#endif
 }

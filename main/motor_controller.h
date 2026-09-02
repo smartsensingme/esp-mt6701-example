@@ -14,6 +14,7 @@ typedef struct {
   float proportional_term;
   float derivative_term;
   float output_percent;
+  uint32_t reference_step_count;
   uint8_t open_loop_stage;
   bool high_reference_active;
   bool previous_speed_valid;
@@ -26,6 +27,7 @@ typedef struct {
   float integral_term;
   float derivative_term;
   float output_percent;
+  uint32_t reference_step_count;
   uint8_t open_loop_stage;
   bool open_loop_test;
 } motor_controller_status_t;
@@ -51,5 +53,15 @@ float motor_controller_update(motor_controller_t *controller,
 /** Copy the current reference, error, PID terms, and saturated output. */
 void motor_controller_get_status(const motor_controller_t *controller,
                                  motor_controller_status_t *status);
+
+/**
+ * Describe the next automatic closed-loop reference transition.
+ *
+ * @return true in the alternating-reference profile; false in open-loop mode
+ * or for invalid arguments.
+ */
+bool motor_controller_get_next_reference_step(
+    const motor_controller_t *controller, float *seconds_remaining,
+    uint32_t *step_id);
 
 #endif /* MOTOR_CONTROLLER_H_ */

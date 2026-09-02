@@ -75,6 +75,24 @@ The measured board has 10 kΩ from `R_IS` to ground. The expected interface adds
 and external Schottky clamps to 3.3 V/GND. Read the component documentation
 before connecting the GPIO.
 
+### Control Time-Series Capture
+
+The reusable `esp_timeseries_recorder` component reserves one contiguous
+internal-DRAM buffer and stores sample-major, interleaved `int16_t` records.
+`CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` selects its size (128 KiB by
+default); runtime channel count determines the sample capacity.
+
+This application records speed, current, control action, and reference. An
+automatic capture starts 1 s before each new reference step and initially uses
+500 Hz. The rate belongs to each `ARM` operation, must divide 1 kHz exactly,
+and can later come from an Octave command. Four channels in 128 KiB at 500 Hz
+hold 16,384 samples, or 32.768 s.
+
+A full buffer stays immutable until `CLEAR`. Metadata, addresses, scaling,
+saturation/invalid counters, and a stable payload view are already exposed for
+the future USB transport; USB, CRC, and command parsing remain outside the
+storage component.
+
 ---
 
 ## ⚡ High-Speed Optimizations & Timing Accuracy

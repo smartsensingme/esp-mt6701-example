@@ -75,6 +75,24 @@ A placa medida possui 10 kΩ entre `R_IS` e GND. O circuito esperado adiciona
 Schottky externos para 3,3 V/GND. Consulte a documentação do driver antes
 de conectar o GPIO.
 
+### Captura de séries temporais
+
+O componente reutilizável `esp_timeseries_recorder` reserva um buffer contínuo
+em DRAM interna e armazena registros intercalados de `int16_t`. O tamanho vem de
+`CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` (padrão: 128 KiB); a quantidade de
+amostras é calculada em tempo de execução a partir do número de canais.
+
+Nesta aplicação são registrados velocidade, corrente, ação de controle e
+referência. A captura automática começa 1 s antes de cada novo degrau de
+referência e usa inicialmente 500 Hz. A taxa pertence a cada operação `ARM`,
+deve dividir exatamente 1 kHz e poderá ser fornecida futuramente pelo Octave.
+Com quatro canais e 128 KiB, 500 Hz armazenam 16.384 amostras, ou 32,768 s.
+
+Quando o buffer enche, permanece imutável em `FULL` até `CLEAR`. A API já expõe
+metadados, endereços, escalas, contadores de saturação/valores inválidos e uma
+visão do payload para o futuro transporte USB; USB, CRC e comandos não fazem
+parte do componente de armazenamento.
+
 ---
 
 ## ⚡ Otimizações de Alta Velocidade & Precisão de Tempo
