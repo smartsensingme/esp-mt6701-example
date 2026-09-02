@@ -27,11 +27,12 @@ menu "Control Time-Series Capture"
 
     config APP_TIMESERIES_AUTO_CAPTURE
         bool "Automatically capture around reference steps"
-        default y
+        default n
         help
             Arm the reusable time-series recorder shortly before each new
             closed-loop reference step. A full capture remains preserved until
-            a future transport or application calls CLEAR.
+            a transport or application calls CLEAR. Keep this disabled when an
+            external host such as Octave owns the ARM/CLEAR workflow.
 
     config APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ
         int "Default automatic capture rate (Hz)"

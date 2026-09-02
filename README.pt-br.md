@@ -83,8 +83,8 @@ em DRAM interna e armazena registros intercalados de `int16_t`. O tamanho vem de
 amostras é calculada em tempo de execução a partir do número de canais.
 
 Nesta aplicação são registrados velocidade, corrente, ação de controle e
-referência. A captura automática começa 1 s antes de cada novo degrau de
-referência e usa inicialmente 500 Hz. A taxa pertence a cada operação `ARM`,
+referência. O console Octave arma cada captura sob demanda e oferece inicialmente
+500 Hz. A taxa pertence a cada operação `ARM`,
 deve dividir exatamente 1 kHz e também pode ser escolhida pelo comando USB
 `ARM <rate_hz>`. Com quatro canais e 128 KiB, 500 Hz armazenam 16.384 amostras,
 ou 32,768 s.
@@ -98,7 +98,8 @@ binárias little-endian protegidas por CRC-32/IEEE. Consulte
 `tools/octave/README.md` para receber, converter e plotar a captura. A UART0
 continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo
 binário. Execute `ts_console()` no Octave para selecionar a porta e operar o
-gravador por menus guiados.
+gravador por menus guiados. A captura automática ao redor dos degraus continua
+disponível no Kconfig, mas vem desabilitada para não disputar um `ARM` do host.
 
 ---
 

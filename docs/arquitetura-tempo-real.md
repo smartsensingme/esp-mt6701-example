@@ -625,7 +625,8 @@ continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
 
 - `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB`: reserva estática, padrão 128 KiB;
 - `CONFIG_ESP_TIMESERIES_RECORDER_MAX_CHANNELS`: máximo de descritores, padrão 16;
-- `CONFIG_APP_TIMESERIES_AUTO_CAPTURE`: captura antes dos degraus;
+- `CONFIG_APP_TIMESERIES_AUTO_CAPTURE`: captura antes dos degraus, desabilitada
+  por padrão quando o Octave controla `ARM` e `CLEAR`;
 - `CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ`: padrão 500 Hz;
 - `CONFIG_APP_TIMESERIES_PRETRIGGER_MS`: padrão 1000 ms.
 - `CONFIG_ESP_TIMESERIES_USB_TRANSPORT_ENABLE`: habilita comandos na USB nativa;

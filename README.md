@@ -82,9 +82,9 @@ internal-DRAM buffer and stores sample-major, interleaved `int16_t` records.
 `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` selects its size (128 KiB by
 default); runtime channel count determines the sample capacity.
 
-This application records speed, current, control action, and reference. An
-automatic capture starts 1 s before each new reference step and initially uses
-500 Hz. The rate belongs to each `ARM` operation, must divide 1 kHz exactly,
+This application records speed, current, control action, and reference. The
+Octave console arms captures on demand and initially offers 500 Hz. The rate
+belongs to each `ARM` operation, must divide 1 kHz exactly,
 and can also be selected with the USB command `ARM <rate_hz>`. Four channels in
 128 KiB at 500 Hz hold 16,384 samples, or 32.768 s.
 
@@ -96,7 +96,8 @@ self-describing text header followed by little-endian binary samples protected
 by CRC-32/IEEE. See `tools/octave/README.md` for the receiver and plotting
 workflow. UART0 remains the firmware log/flash port so logs cannot enter the
 binary stream. Run `ts_console()` in Octave for the guided port selection and
-recorder menus.
+recorder menus. Automatic capture around reference steps remains available in
+Kconfig, but is disabled by default so it cannot race a host-driven `ARM`.
 
 ---
 

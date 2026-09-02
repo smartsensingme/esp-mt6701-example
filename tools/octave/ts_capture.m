@@ -1,4 +1,4 @@
-function capture = ts_capture (port_name, output_file, clear_after, make_plot)
+function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
   if (nargin < 1 || nargin > 4)
     print_usage ();
   endif
@@ -12,13 +12,13 @@ function capture = ts_capture (port_name, output_file, clear_after, make_plot)
     make_plot = true;
   endif
 
-  ts_load_instrument_control ();
-  device = [];
+  owns_device = ischar (endpoint);
+  if (owns_device)
+    device = ts_open_serial (endpoint, 30);
+  else
+    device = endpoint;
+  endif
   unwind_protect
-    device = serialport (port_name, 115200);
-    set (device, "Timeout", 30);
-    configureTerminator (device, "lf");
-    pause (0.1);
     flush (device);
     write (device, uint8 (["DUMP", char(10)]), "uint8");
 
@@ -103,7 +103,9 @@ function capture = ts_capture (port_name, output_file, clear_after, make_plot)
       fprintf ("Capture remains FULL. Use ts_command(port, \"CLEAR\") when ready.\n");
     endif
   unwind_protect_cleanup
-    clear device;
+    if (owns_device)
+      clear device;
+    endif
   end_unwind_protect
 endfunction
 
@@ -113,7 +115,8 @@ function [metadata, header_lines] = read_header (device)
     error ("Firmware rejected DUMP: %s", first_line);
   endif
   if (! strcmp (first_line, "TSRECORDER/1"))
-    error ("Unexpected protocol line: %s", first_line);
+    error (["Unexpected protocol line: %s. Close every serial monitor using ", ...
+            "the native USB port."], first_line);
   endif
 
   metadata = containers.Map ("KeyType", "char", "ValueType", "char");

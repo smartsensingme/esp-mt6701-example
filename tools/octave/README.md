@@ -25,11 +25,12 @@ Examples:
     addpath("tools/octave")
     ts_console()
 
-`ts_console` is the recommended interactive entry point. It loads
-instrument-control, lists the serial ports in a selection menu, displays the
-initial recorder status, and provides menus for `STATUS`, `DUMP`, `ARM`,
-`CLEAR`, `INFO`, `PING`, and `HELP`. After a valid DUMP, it saves a MAT file and
-opens one graph window per recorded channel.
+`ts_console` is the recommended interactive entry point. It keeps one serial
+connection open, lists the ports, and provides a complete experiment action.
+That action sends `ARM`, polls `STATUS` every 500 ms, automatically starts
+`DUMP` on `FULL`, validates the CRC, saves a MAT file, and opens one graph
+window per recorded channel. Individual protocol operations remain in an
+advanced menu.
 
 The lower-level functions remain available for automated experiments:
 
@@ -38,10 +39,10 @@ The lower-level functions remain available for automated experiments:
     capture = ts_capture("/dev/cu.usbmodem1101", "capture.mat")
     ts_command("/dev/cu.usbmodem1101", "CLEAR")
 
-The default firmware arms automatically one second before a 600/900 RPM
-reference transition. Poll `STATUS` until it reports `state=FULL`, then call
-`ts_capture`. To start immediately at a different rate while the recorder is
-`EMPTY`, use `ARM 250` (or another exact divisor of 1000).
+The default firmware leaves automatic capture disabled so Octave owns the
+ARM/CLEAR sequence. It can still be enabled in Kconfig for standalone tests.
+Do not leave another serial monitor connected to the native USB port: two
+readers split protocol bytes. Use the WCH/USB-UART port for firmware logs.
 
 To clear automatically only after a valid CRC and save without plotting:
 
