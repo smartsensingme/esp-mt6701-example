@@ -1,14 +1,32 @@
-function calibration = ts_calculate_angle_lut (capture, bin_count)
-  if (nargin < 1 || nargin > 2)
+function calibration = ts_calculate_angle_lut (capture, bin_count, ...
+                                                full_scale_counts, ...
+                                                max_abs_correction_counts)
+  if (nargin < 1 || nargin > 4)
     print_usage ();
   endif
   if (nargin < 2)
     bin_count = 256;
   endif
+  if (nargin < 3)
+    full_scale_counts = 16384;
+  endif
+  if (nargin < 4)
+    max_abs_correction_counts = 1024;
+  endif
   if (! isscalar (bin_count) || bin_count < 16 || ...
       bin_count != fix (bin_count) || bitand (bin_count, bin_count - 1) != 0 || ...
-      mod (16384, bin_count) != 0)
-    error ("bin_count must be a power of two that divides 16384");
+      ! isscalar (full_scale_counts) || full_scale_counts < 256 || ...
+      full_scale_counts > 65536 || ...
+      full_scale_counts != fix (full_scale_counts) || ...
+      bitand (full_scale_counts, full_scale_counts - 1) != 0 || ...
+      mod (full_scale_counts, bin_count) != 0)
+    error (["bin_count and full_scale_counts must be powers of two, and ", ...
+            "bin_count must divide full_scale_counts"]);
+  endif
+  if (! isscalar (max_abs_correction_counts) || ...
+      max_abs_correction_counts < 1 || ...
+      max_abs_correction_counts > 32767)
+    error ("max_abs_correction_counts is invalid");
   endif
 
   angle_index = optional_channel (capture, "angle_raw");
@@ -68,9 +86,15 @@ function calibration = ts_calculate_angle_lut (capture, bin_count)
     smooth_error -= mean (smooth_error);
     previous = [numel(smooth_error); (1:(numel(smooth_error) - 1))'];
     boundary_error = 0.5 * (smooth_error + smooth_error(previous));
-    candidate = int16 (round (boundary_error * 16384 / (2 * pi)));
-    candidate = int16 (double (candidate) - round (mean (double (candidate))));
-    if (valid_monotonic_lut (candidate))
+    candidate_double = round (boundary_error * full_scale_counts / ...
+                              (2 * pi));
+    candidate_double -= round (mean (candidate_double));
+    if (any (abs (candidate_double) > 32767))
+      selected_harmonics -= 1;
+      continue;
+    endif
+    candidate = int16 (candidate_double);
+    if (valid_monotonic_lut (candidate, full_scale_counts))
       correction_counts = candidate;
       break;
     endif
@@ -79,12 +103,13 @@ function calibration = ts_calculate_angle_lut (capture, bin_count)
   if (isempty (correction_counts))
     error ("Could not produce a monotonic correction LUT");
   endif
-  if (max (abs (double (correction_counts))) > 1024)
+  if (max (abs (double (correction_counts))) > ...
+      max_abs_correction_counts)
     error ("Calculated correction exceeds the firmware safety limit");
   endif
 
   centers_rad = ((0:(bin_count - 1))' + 0.5) * 2 * pi / bin_count;
-  correction_rad = double (correction_counts) * 2 * pi / 16384;
+  correction_rad = double (correction_counts) * 2 * pi / full_scale_counts;
   validation_raw = bin_median (validation_phase, validation_error, bin_count);
   validation_raw = fill_circular (validation_raw);
   correction_at_centers = interp_cyclic (correction_rad, centers_rad);
@@ -93,7 +118,8 @@ function calibration = ts_calculate_angle_lut (capture, bin_count)
   corrected_rms_deg = sqrt (mean (validation_corrected .^ 2)) * 180 / pi;
   reduction_percent = 100 * (1 - corrected_rms_deg / max (raw_rms_deg, eps));
 
-  corrected_deg = ts_apply_angle_lut (raw_deg, correction_counts);
+  corrected_deg = ts_apply_angle_lut (raw_deg, correction_counts, ...
+                                      full_scale_counts);
   raw_speed_energy = 0;
   corrected_speed_energy = 0;
   speed_samples = 0;
@@ -117,11 +143,13 @@ function calibration = ts_calculate_angle_lut (capture, bin_count)
 
   payload = ts_int16_le_bytes (correction_counts);
   calibration = struct ();
-  calibration.format_version = 1;
-  calibration.sensor_counts = 16384;
+  calibration.format_version = 2;
+  calibration.full_scale_counts = full_scale_counts;
+  calibration.sensor_counts = full_scale_counts;
   calibration.bin_count = bin_count;
   calibration.correction_counts = correction_counts(:);
-  calibration.correction_deg = double (correction_counts(:)) * 360 / 16384;
+  calibration.correction_deg = double (correction_counts(:)) * 360 / ...
+                               full_scale_counts;
   calibration.lut_angle_deg = (0:(bin_count - 1))' * 360 / bin_count;
   calibration.payload = payload;
   calibration.payload_crc32 = ts_crc32_ieee (payload);
@@ -242,8 +270,8 @@ function smooth = circular_harmonic_smooth (values, harmonic_count)
   smooth = real (ifft (spectrum));
 endfunction
 
-function valid = valid_monotonic_lut (corrections)
-  bin_width = 16384 / numel (corrections);
+function valid = valid_monotonic_lut (corrections, full_scale_counts)
+  bin_width = full_scale_counts / numel (corrections);
   next = corrections([2:end, 1]);
   steps = bin_width + double (next) - double (corrections);
   valid = all (steps > 0 & steps <= 4 * bin_width);

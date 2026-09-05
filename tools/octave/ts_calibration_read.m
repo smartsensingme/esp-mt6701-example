@@ -14,8 +14,13 @@ function calibration = ts_calibration_read (endpoint)
     if (strncmp (first, "ERR ", 4))
       error ("Firmware rejected CAL READ: %s", first);
     endif
-    if (! strcmp (first, "ANGLELUT/1"))
+    protocol = regexp (first, "^ANGLELUT/([0-9]+)$", "tokens", "once");
+    if (isempty (protocol))
       error ("Unexpected calibration protocol line: %s", first);
+    endif
+    format_version = str2double (protocol{1});
+    if (! any (format_version == [1, 2]))
+      error ("Unsupported calibration format: %d", format_version);
     endif
     metadata = containers.Map ("KeyType", "char", "ValueType", "char");
     while (true)
@@ -30,6 +35,11 @@ function calibration = ts_calibration_read (endpoint)
       metadata(line(1:(separator - 1))) = line((separator + 1):end);
     endwhile
     bins = required_number (metadata, "bins");
+    if (format_version >= 2)
+      full_scale_counts = required_number (metadata, "full_scale_counts");
+    else
+      full_scale_counts = 16384;
+    endif
     payload_bytes = required_number (metadata, "payload_bytes");
     if (payload_bytes != 2 * bins)
       error ("Calibration header dimensions are inconsistent");
@@ -47,12 +57,15 @@ function calibration = ts_calibration_read (endpoint)
     signed(signed >= 32768) -= 65536;
     correction_counts = int16 (signed);
     calibration = struct ();
-    calibration.format_version = 1;
+    calibration.format_version = format_version;
     calibration.bin_count = bins;
+    calibration.full_scale_counts = full_scale_counts;
+    calibration.sensor_counts = full_scale_counts;
     calibration.generation = required_number (metadata, "generation");
     calibration.enabled = logical (required_number (metadata, "enabled"));
     calibration.correction_counts = correction_counts(:);
-    calibration.correction_deg = double (correction_counts(:)) * 360 / 16384;
+    calibration.correction_deg = double (correction_counts(:)) * 360 / ...
+                                 full_scale_counts;
     calibration.payload = payload;
     calibration.payload_crc32 = actual_crc;
   unwind_protect_cleanup

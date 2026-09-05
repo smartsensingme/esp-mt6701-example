@@ -96,10 +96,12 @@ Um `ARM` comum inicia um novo ensaio em malha fechada com referências de
 duração permite incluir todos os patamares numa calibração a 500 Hz antes de o
 buffer encher.
 
-O componente reutilizável `esp_angle_lut` corrige o ângulo de 14 bits do MT6701
-antes do estimador de Kalman. As 256 correções em contagens do sensor são
-interpoladas no caminho de 4 kHz e armazenadas em dois slots NVS protegidos por
-CRC. O console Octave realiza o ensaio, calcula e valida a LUT, envia os dados
+O componente reutilizável `esp_angle_lut` corrige um ângulo cíclico em contagens
+nativas antes do estimador de Kalman. Sua escala completa configurável aceita
+resoluções de sensores, em potência de dois, entre 8 e 16 bits; esta aplicação
+usa 14 bits para o MT6701. As 256 correções em contagens são interpoladas no
+caminho de 4 kHz e armazenadas em dois slots NVS protegidos por CRC. O console
+Octave realiza o ensaio, calcula e valida a LUT, envia os dados
 binários, verifica a leitura de volta e só então a habilita. O canal registrado
 `angle_raw` permanece sempre sem correção, impedindo que uma recalibração
 aprenda a LUT anterior.

@@ -50,8 +50,17 @@ assert (calibration.speed_reduction_percent > 70);
 assert (calibration.payload_crc32 == ...
         ts_crc32_ieee (ts_int16_le_bytes (calibration.correction_counts)));
 corrected = ts_apply_angle_lut (measured_angle, ...
-                                calibration.correction_counts);
+                                calibration.correction_counts, ...
+                                calibration.full_scale_counts);
 phase_error = mod (corrected - true_angle + 180, 360) - 180;
 assert (sqrt (mean (phase_error .^ 2)) < 0.15);
+
+calibration_12_bit = ts_calculate_angle_lut (synthetic, 256, 4096, 256);
+assert (calibration_12_bit.full_scale_counts == 4096);
+corrected_12_bit = ts_apply_angle_lut (...
+    measured_angle, calibration_12_bit.correction_counts, ...
+    calibration_12_bit.full_scale_counts);
+phase_error_12_bit = mod (corrected_12_bit - true_angle + 180, 360) - 180;
+assert (sqrt (mean (phase_error_12_bit .^ 2)) < 0.2);
 
 disp ("Offline Octave recorder tests passed");

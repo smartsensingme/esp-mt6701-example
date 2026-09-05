@@ -198,7 +198,8 @@ As voltas ímpares formam a LUT e as voltas pares são reservadas para validá-l
 Essa separação reduz o risco de considerar bom um mapa que apenas reproduz o
 ruído das mesmas amostras usadas no cálculo.
 
-O círculo é dividido em 256 intervalos. Como o MT6701 tem 14 bits,
+Na configuração desta aplicação, o círculo é dividido em 256 intervalos. Como
+o MT6701 tem 14 bits,
 
 \[
 16384/256=64\ \text{contagens por intervalo}.
@@ -225,23 +226,28 @@ reduzido até que se obtenha um mapa válido.
 
 ### 5.6 Conversão para a LUT de 16 bits
 
-As correções em radianos são convertidas para contagens do sensor:
+Seja \(C\) o número configurado de contagens por volta. As correções em
+radianos são convertidas para contagens do sensor:
 
 \[
 c_i[\text{counts}]=\operatorname{round}
-\left(c_i[\text{rad}]\frac{16384}{2\pi}\right).
+\left(c_i[\text{rad}]\frac{C}{2\pi}\right).
 \]
 
 Cada entrada é um `int16_t`; 256 entradas ocupam somente 512 bytes. O firmware
 impõe duas verificações principais:
 
-- magnitude máxima configurada de 1024 contagens, equivalente a 22,5 graus;
+- magnitude máxima configurada; no padrão do MT6701 são 1024 contagens,
+  equivalentes a 22,5 graus;
 - monotonicidade da transformação. Para cada par de pontos consecutivos,
   inclusive na passagem 255 para 0,
 
 \[
-0 < 64+c_{i+1}-c_i \leq 4\times64.
+0 < B+c_{i+1}-c_i \leq 4B,
 \]
+
+em que \(B=C/N\) é a largura de um intervalo e \(N\) é o número de pontos da
+LUT. Para o MT6701 com 256 pontos, \(B=64\).
 
 A primeira desigualdade impede que ângulos corrigidos invertam sua ordem. O
 limite superior rejeita saltos excessivos.
@@ -300,7 +306,8 @@ mapa_suave = real(ifft(E));
 mapa_suave -= mean(mapa_suave);
 
 % Valor inteiro transmitido ao ESP32.
-lut_counts = int16(round(mapa_suave * 16384 / (2*pi)));
+full_scale_counts = 16384;       % MT6701; use 4096 para um sensor de 12 bits
+lut_counts = int16(round(mapa_suave * full_scale_counts / (2*pi)));
 ```
 
 Na implementação completa, consulte
@@ -313,7 +320,8 @@ validação.
 
 O envio usa um cabeçalho textual e uma carga binária:
 
-1. Octave envia `CAL WRITE 256 <CRC32>`;
+1. Octave envia `CAL WRITE 256 16384 <CRC32>`; o terceiro campo informa a
+   escala completa usada no cálculo;
 2. ESP32 responde que está pronto;
 3. Octave envia 512 bytes: 256 inteiros de 16 bits em *little endian*;
 4. ESP32 recalcula o CRC-32 e valida limites e monotonicidade;
@@ -331,20 +339,21 @@ permitem consultar, recuperar, ativar, desativar e apagar a calibração.
 
 ## 9. Aplicação da correção no firmware
 
-Para uma leitura bruta \(r\), o firmware encontra o intervalo e a fração dentro
-dele:
+Para uma leitura bruta \(r\), uma escala completa \(C\) e \(N\) pontos, o
+firmware encontra o intervalo e a fração dentro dele. No caso padrão
+\(C=16384\), \(N=256\) e \(B=C/N=64\):
 
 \[
 i=\left\lfloor r/64\right\rfloor,\qquad f=(r\bmod64)/64.
 \]
 
 A correção é interpolada entre `LUT[i]` e `LUT[(i+1) mod 256]` e somada à
-leitura. O módulo final mantém o resultado entre 0 e 16383.
+leitura. O módulo final mantém o resultado entre 0 e \(C-1\).
 
 O trecho abaixo é uma versão didática equivalente à função embarcada:
 
 ```c
-#define SENSOR_COUNTS 16384
+#define SENSOR_COUNTS CONFIG_ESP_ANGLE_LUT_FULL_SCALE_COUNTS
 #define LUT_SIZE 256
 #define BIN_WIDTH (SENSOR_COUNTS / LUT_SIZE)  /* 64 */
 
@@ -429,6 +438,12 @@ habilitada.
 8. Habilite a tabela e repita um `ARM 250` ou `ARM 500`: esse novo ensaio será
    em malha fechada, com referência de 600/900 rpm.
 9. Compare erro, ação de controle e ondulação de velocidade antes e depois.
+
+O componente aceita escalas em potência de dois entre 256 e 65536 contagens por
+volta. Assim, o mesmo algoritmo pode trabalhar, por exemplo, com 4096 contagens
+para um sensor de 12 bits, 16384 para o MT6701 ou 65536 para um sensor de 16
+bits. A escala faz parte dos metadados da LUT, e o firmware rejeita uma tabela
+calculada para uma resolução diferente da configurada.
 
 Uma discussão final importante é distinguir três operações: **calibração**
 (estimar o mapa), **correção** (aplicar o mapa a cada leitura) e **filtragem**

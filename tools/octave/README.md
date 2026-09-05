@@ -42,12 +42,14 @@ and validates the result on alternating revolutions that were not used to fit
 the table. The result window shows the correction and phase error before/after.
 The MAT file contains both the original `capture` and calculated `calibration`.
 
-After user confirmation, Octave uploads the signed 14-bit-count corrections as
-binary, checks the IEEE CRC32, reads the table back byte-for-byte, and only then
-enables it. The firmware stores two versioned NVS slots so an interrupted write
-cannot replace the last valid table. New uploads start disabled. Calibration
-management in the console can inspect, enable, disable, read back, or erase the
-stored LUT.
+After user confirmation, Octave uploads the signed native-count corrections and
+their counts-per-revolution scale as binary, checks the IEEE CRC32, reads the
+table back byte-for-byte, and only then enables it. Format 2 accepts
+power-of-two scales from 256 through 65536 counts; the default remains 16384
+for the MT6701. The firmware stores two versioned NVS slots so an interrupted
+write cannot replace the last valid table. New uploads start disabled.
+Calibration management in the console can inspect, enable, disable, read back,
+or erase the stored LUT.
 
 For an open-loop capture containing the raw `angle_raw` channel (legacy files
 named it `angle`), the panels change

@@ -12,6 +12,13 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
     endif
   endfor
   payload = ts_int16_le_bytes (calibration.correction_counts);
+  if (isfield (calibration, "full_scale_counts"))
+    full_scale_counts = calibration.full_scale_counts;
+  elseif (isfield (calibration, "sensor_counts"))
+    full_scale_counts = calibration.sensor_counts;
+  else
+    error ("Calibration is missing full_scale_counts");
+  endif
   crc = ts_crc32_ieee (payload);
   if (crc != calibration.payload_crc32)
     error ("Calibration CRC does not match its correction table");
@@ -24,7 +31,8 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
     device = endpoint;
   endif
   unwind_protect
-    command = sprintf ("CAL WRITE %d %08X", calibration.bin_count, crc);
+    command = sprintf ("CAL WRITE %d %d %08X", calibration.bin_count, ...
+                       full_scale_counts, crc);
     write (device, uint8 ([command, char(10)]), "uint8");
     ready = strtrim (char (readline (device)));
     if (! strncmp (ready, "OK command=CAL_WRITE state=READY ", 33))
@@ -39,7 +47,8 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
     readback = ts_calibration_read (device);
     if (! isequal (readback.correction_counts(:), ...
                    int16 (calibration.correction_counts(:))) || ...
-        readback.payload_crc32 != crc)
+        readback.payload_crc32 != crc || ...
+        readback.full_scale_counts != full_scale_counts)
       error ("Calibration readback differs from the uploaded LUT");
     endif
     if (enable_after)

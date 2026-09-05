@@ -76,10 +76,16 @@ _Static_assert(REALTIME_CONTROL_RATE_HZ %
 
 static const char *TAG = "REALTIME_LOOP";
 
-static uint16_t angle_degrees_to_counts(float angle_deg) {
-  return (uint16_t)lroundf(angle_deg *
-                           ((float)ESP_ANGLE_LUT_SENSOR_COUNTS / 360.0f)) &
-         (ESP_ANGLE_LUT_SENSOR_COUNTS - 1U);
+static uint16_t mt6701_to_lut_counts(uint16_t mt6701_counts) {
+  uint32_t scaled =
+      ((uint32_t)mt6701_counts * ESP_ANGLE_LUT_FULL_SCALE_COUNTS) /
+      MT6701_COUNTS_PER_REVOLUTION;
+  return (uint16_t)(scaled & (ESP_ANGLE_LUT_FULL_SCALE_COUNTS - 1U));
+}
+
+static float lut_counts_to_degrees(uint16_t angle_counts) {
+  return (float)angle_counts *
+         (360.0f / (float)ESP_ANGLE_LUT_FULL_SCALE_COUNTS);
 }
 
 /* Functional state owned exclusively by the Core 1 real-time task. */
@@ -237,14 +243,13 @@ static esp_err_t initialize_sensor_and_filter(realtime_loop_context_t *context,
   ESP_RETURN_ON_ERROR(
       mt6701_set_software_direction(&context->sensor, MT6701_DIR_CW), TAG,
       "Could not configure MT6701 direction");
-  float initial_raw_angle_deg = 0.0f;
+  uint16_t initial_raw_angle_counts = 0U;
   ESP_RETURN_ON_ERROR(
-      mt6701_get_last_angle_degrees(&context->sensor, &initial_raw_angle_deg),
+      mt6701_get_last_angle_counts(&context->sensor, &initial_raw_angle_counts),
       TAG, "Could not get initial MT6701 angle");
-  uint16_t initial_angle_counts =
-      angle_degrees_to_counts(initial_raw_angle_deg);
+  uint16_t initial_lut_counts = mt6701_to_lut_counts(initial_raw_angle_counts);
   *initial_angle_deg =
-      mt6701_counts_to_degrees(esp_angle_lut_apply(initial_angle_counts));
+      lut_counts_to_degrees(esp_angle_lut_apply(initial_lut_counts));
 
   /*
    * Q values were originally tuned for a 1 kHz update. Scale their per-update
@@ -467,12 +472,14 @@ static void realtime_task(void *argument) {
        * get_last reads the value cached by mt6701_update(); it causes no second
        * I2C transaction. Reject pathological dt values after a long disruption.
        */
-      if (mt6701_get_last_angle_degrees(&context->sensor, &raw_angle_deg) ==
+      uint16_t raw_angle_counts = 0U;
+      if (mt6701_get_last_angle_counts(&context->sensor, &raw_angle_counts) ==
               ESP_OK &&
           sample_dt > 0.0f && sample_dt < 0.1f) {
-        uint16_t raw_angle_counts = angle_degrees_to_counts(raw_angle_deg);
+        raw_angle_deg = mt6701_counts_to_degrees(raw_angle_counts);
+        uint16_t lut_angle_counts = mt6701_to_lut_counts(raw_angle_counts);
         measured_angle_deg =
-            mt6701_counts_to_degrees(esp_angle_lut_apply(raw_angle_counts));
+            lut_counts_to_degrees(esp_angle_lut_apply(lut_angle_counts));
         engine_angle_kalman_3d_update(&context->filter, measured_angle_deg,
                                       sample_dt);
         esp_rt_diag_event(diagnostics_ptr, REALTIME_DIAG_EVENT_ESTIMATOR_UPDATE,

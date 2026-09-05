@@ -259,30 +259,43 @@ static void send_calibration_status(const char *command) {
   esp_angle_lut_status_t status;
   esp_angle_lut_get_status(&status);
   usb_sendf("OK command=%s protocol=%u loaded=%u enabled=%u format=%u "
-            "bins=%u generation=%" PRIu32 " crc32=%08" PRIX32 "\n",
+            "bins=%u full_scale_counts=%" PRIu32
+            " max_abs_correction_counts=%" PRIu32 " generation=%" PRIu32
+            " crc32=%08" PRIX32 "\n",
             command, PROTOCOL_VERSION, status.loaded, status.enabled,
-            status.format_version, status.bin_count, status.generation,
+            status.format_version, status.bin_count, status.full_scale_counts,
+            status.max_abs_correction_counts, status.generation,
             status.payload_crc32);
 }
 
 static bool parse_cal_write(const char *line, size_t *bin_count,
+                            uint32_t *full_scale_counts,
                             uint32_t *payload_crc32) {
   unsigned long parsed_bins = 0UL;
+  unsigned long parsed_full_scale = 0UL;
   unsigned long parsed_crc = 0UL;
   char extra = '\0';
-  int fields =
-      sscanf(line, "CAL WRITE %lu %lx %c", &parsed_bins, &parsed_crc, &extra);
-  if (fields != 2 || parsed_bins > SIZE_MAX || parsed_crc > UINT32_MAX) {
+  int fields = sscanf(line, "CAL WRITE %lu %lu %lx %c", &parsed_bins,
+                      &parsed_full_scale, &parsed_crc, &extra);
+  if (fields != 3 || parsed_bins > SIZE_MAX || parsed_full_scale > UINT32_MAX ||
+      parsed_crc > UINT32_MAX) {
     return false;
   }
   *bin_count = (size_t)parsed_bins;
+  *full_scale_counts = (uint32_t)parsed_full_scale;
   *payload_crc32 = (uint32_t)parsed_crc;
   return true;
 }
 
-static void receive_calibration(size_t bin_count, uint32_t payload_crc32) {
+static void receive_calibration(size_t bin_count, uint32_t full_scale_counts,
+                                uint32_t payload_crc32) {
   if (bin_count != ESP_ANGLE_LUT_BIN_COUNT) {
     send_error("CAL_WRITE", ESP_ERR_INVALID_SIZE, "unexpected_bin_count");
+    return;
+  }
+  if (full_scale_counts != ESP_ANGLE_LUT_FULL_SCALE_COUNTS) {
+    send_error("CAL_WRITE", ESP_ERR_INVALID_SIZE,
+               "unexpected_full_scale_counts");
     return;
   }
   esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
@@ -300,7 +313,8 @@ static void receive_calibration(size_t bin_count, uint32_t payload_crc32) {
     error = usb_read_all(corrections, sizeof(corrections));
   }
   if (error == ESP_OK) {
-    error = esp_angle_lut_install(corrections, bin_count, payload_crc32);
+    error = esp_angle_lut_install(corrections, bin_count, full_scale_counts,
+                                  payload_crc32);
   }
   if (error != ESP_OK) {
     send_error("CAL_WRITE", error,
@@ -324,6 +338,10 @@ static void send_calibration(void) {
   error = usb_sendf("ANGLELUT/%u\n", ESP_ANGLE_LUT_FORMAT_VERSION);
   if (error == ESP_OK) {
     error = usb_sendf("bins=%u\n", status.bin_count);
+  }
+  if (error == ESP_OK) {
+    error =
+        usb_sendf("full_scale_counts=%" PRIu32 "\n", status.full_scale_counts);
   }
   if (error == ESP_OK) {
     error = usb_sendf("generation=%" PRIu32 "\n", status.generation);
@@ -381,11 +399,12 @@ static bool process_calibration_command(const char *line) {
       return true;
     }
     size_t bin_count = 0U;
+    uint32_t full_scale_counts = 0U;
     uint32_t crc32 = 0U;
-    if (!parse_cal_write(line, &bin_count, &crc32)) {
+    if (!parse_cal_write(line, &bin_count, &full_scale_counts, &crc32)) {
       return false;
     }
-    receive_calibration(bin_count, crc32);
+    receive_calibration(bin_count, full_scale_counts, crc32);
   }
   return true;
 }

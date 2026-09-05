@@ -95,9 +95,11 @@ closed-loop 600/900 RPM experiment. These values are configurable in Kconfig.
 The duration lets a 500 Hz calibration include all plateaus before the buffer
 fills.
 
-The reusable `esp_angle_lut` component corrects the 14-bit MT6701 angle before
-the Kalman estimator. Its 256 signed-count entries are linearly interpolated in
-the 4 kHz path and stored in two CRC-protected NVS slots. The Octave console can
+The reusable `esp_angle_lut` component corrects a cyclic native-count angle
+before the Kalman estimator. Its configurable full scale supports power-of-two
+sensor resolutions from 8 through 16 bits; this application uses 14 bits for
+the MT6701. Its 256 signed-count entries are linearly interpolated in the 4 kHz
+path and stored in two CRC-protected NVS slots. The Octave console can
 run the calibration capture, fit and validate the LUT, upload it as binary,
 verify a readback, and then enable it. The recorded `angle_raw` channel always
 remains uncorrected so a later calibration never learns the previous LUT.
