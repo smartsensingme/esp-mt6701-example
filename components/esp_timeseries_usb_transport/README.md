@@ -39,6 +39,12 @@ disabled. `CAL READ` returns an `ANGLELUT/2` text header containing
 `full_scale_counts`, followed by the binary table. This supports resolution and
 readback verification before `CAL ENABLE`.
 
+Rejected uploads report a specific reason such as `crc_mismatch`,
+`correction_out_of_range`, `non_monotonic_lut`, `nvs_blob_write_failed`, or
+`nvs_commit_failed`. The transfer table is stored outside the USB task stack,
+and the firmware log reports its minimum remaining stack space after an
+installation attempt.
+
 The two board connectors have separate roles:
 
 - the USB-UART/programming connector carries flashing, console, and logs;

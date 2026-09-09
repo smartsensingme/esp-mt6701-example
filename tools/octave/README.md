@@ -69,6 +69,9 @@ Calibration protocol commands are also available directly:
 The final argument above requests enablement only after CRC and readback
 verification. Firmware commands are `CAL START`, `CAL STATUS`, `CAL WRITE`, `CAL READ`,
 `CAL ENABLE`, `CAL DISABLE`, and `CAL CLEAR`.
+Before transmitting a LUT, `ts_calibration_write` queries the firmware and
+prints a preflight summary of correction magnitude and corrected-step limits
+using the same acceptance rules as the embedded component.
 
 The plot font size is configurable. Omitting it uses 12 points:
 

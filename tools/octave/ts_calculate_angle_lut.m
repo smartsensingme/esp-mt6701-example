@@ -146,6 +146,7 @@ function calibration = ts_calculate_angle_lut (capture, bin_count, ...
   calibration.format_version = 2;
   calibration.full_scale_counts = full_scale_counts;
   calibration.sensor_counts = full_scale_counts;
+  calibration.max_abs_correction_counts = max_abs_correction_counts;
   calibration.bin_count = bin_count;
   calibration.correction_counts = correction_counts(:);
   calibration.correction_deg = double (correction_counts(:)) * 360 / ...

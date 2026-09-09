@@ -39,6 +39,8 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 static const char *TAG = "TS_USB";
 static TaskHandle_t transport_task_handle;
 static esp_timeseries_usb_transport_config_t transport_config;
+/* CAL WRITE/READ are serialized by transport_task; avoid large stack arrays. */
+static int16_t calibration_transfer_buffer[ESP_ANGLE_LUT_BIN_COUNT];
 
 static TickType_t write_timeout_ticks(void) {
   return pdMS_TO_TICKS(CONFIG_ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS);
@@ -305,32 +307,39 @@ static void receive_calibration(size_t bin_count, uint32_t full_scale_counts,
     return;
   }
 
-  int16_t corrections[ESP_ANGLE_LUT_BIN_COUNT];
   esp_err_t error =
       usb_sendf("OK command=CAL_WRITE state=READY bytes=%zu bins=%zu\n",
-                sizeof(corrections), bin_count);
+                sizeof(calibration_transfer_buffer), bin_count);
   if (error == ESP_OK) {
-    error = usb_read_all(corrections, sizeof(corrections));
+    error = usb_read_all(calibration_transfer_buffer,
+                         sizeof(calibration_transfer_buffer));
   }
+  esp_angle_lut_install_failure_t failure = ESP_ANGLE_LUT_INSTALL_FAILURE_NONE;
   if (error == ESP_OK) {
-    error = esp_angle_lut_install(corrections, bin_count, full_scale_counts,
-                                  payload_crc32);
+    error = esp_angle_lut_install_detailed(calibration_transfer_buffer,
+                                           bin_count, full_scale_counts,
+                                           payload_crc32, &failure);
   }
   if (error != ESP_OK) {
-    send_error("CAL_WRITE", error,
-               error == ESP_ERR_TIMEOUT       ? "payload_timeout"
-               : error == ESP_ERR_INVALID_CRC ? "crc_mismatch"
-                                              : "invalid_lut");
+    const char *reason = error == ESP_ERR_TIMEOUT
+                             ? "payload_timeout"
+                             : esp_angle_lut_install_failure_name(failure);
+    ESP_LOGE(
+        TAG, "CAL WRITE failed: reason=%s error=%s stack_free_min=%u B", reason,
+        esp_err_to_name(error),
+        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
+    send_error("CAL_WRITE", error, reason);
     return;
   }
+  ESP_LOGI(TAG, "CAL WRITE installed; stack_free_min=%u B",
+           (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
   send_calibration_status("CAL_WRITE");
 }
 
 static void send_calibration(void) {
-  int16_t corrections[ESP_ANGLE_LUT_BIN_COUNT];
   esp_angle_lut_status_t status;
-  esp_err_t error =
-      esp_angle_lut_read(corrections, ESP_ANGLE_LUT_BIN_COUNT, &status);
+  esp_err_t error = esp_angle_lut_read(calibration_transfer_buffer,
+                                       ESP_ANGLE_LUT_BIN_COUNT, &status);
   if (error != ESP_OK) {
     send_error("CAL_READ", error, "calibration_not_loaded");
     return;
@@ -353,12 +362,13 @@ static void send_calibration(void) {
     error = usb_sendf("encoding=int16\nbyte_order=little-endian\n");
   }
   if (error == ESP_OK) {
-    error = usb_sendf("payload_bytes=%zu\npayload_crc32=%08" PRIX32
-                      "\nEND-HEADER\n",
-                      sizeof(corrections), status.payload_crc32);
+    error = usb_sendf(
+        "payload_bytes=%zu\npayload_crc32=%08" PRIX32 "\nEND-HEADER\n",
+        sizeof(calibration_transfer_buffer), status.payload_crc32);
   }
   if (error == ESP_OK) {
-    error = usb_send_all(corrections, sizeof(corrections));
+    error = usb_send_all(calibration_transfer_buffer,
+                         sizeof(calibration_transfer_buffer));
   }
   if (error != ESP_OK) {
     ESP_LOGW(TAG, "CAL READ interrupted: %s", esp_err_to_name(error));

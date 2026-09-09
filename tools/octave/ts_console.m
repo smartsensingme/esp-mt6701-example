@@ -262,8 +262,11 @@ endfunction
 function download_capture (device, output_file, clear_after)
   fprintf ("Recebendo a captura binaria...\n");
   capture = ts_capture (device, output_file, clear_after, false);
-  ts_plot_capture (capture);
-  fprintf ("Foi aberta uma figura com os canais da captura.\n");
+  figure_handle = ts_plot_capture (capture);
+  drawnow ();
+  fprintf (["Foi aberta uma figura com os canais da captura. ", ...
+            "Feche-a para voltar ao menu.\n"]);
+  waitfor (figure_handle);
 endfunction
 
 function run_angle_calibration (device)

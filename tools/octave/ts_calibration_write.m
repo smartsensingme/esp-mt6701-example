@@ -31,6 +31,31 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
     device = endpoint;
   endif
   unwind_protect
+    firmware = ts_calibration_status (device, false);
+    corrections = double (calibration.correction_counts(:));
+    if (calibration.bin_count != firmware.bin_count || ...
+        numel (corrections) != firmware.bin_count)
+      error ("LUT bin count differs from the firmware configuration");
+    endif
+    if (full_scale_counts != firmware.full_scale_counts)
+      error ("LUT full scale differs from the firmware configuration");
+    endif
+    bin_width = full_scale_counts / calibration.bin_count;
+    next = corrections([2:end, 1]);
+    corrected_steps = bin_width + next - corrections;
+    maximum_correction = max (abs (corrections));
+    if (maximum_correction > firmware.max_abs_correction_counts)
+      error ("LUT correction exceeds the firmware limit");
+    endif
+    if (any (corrected_steps <= 0) || ...
+        any (corrected_steps > 4 * bin_width))
+      error ("LUT is not monotonic according to the firmware rules");
+    endif
+    fprintf (["Preflight da LUT: correcao maxima %.0f/%d contagens, ", ...
+              "passos corrigidos %.0f..%.0f/1..%.0f.\n"], ...
+             maximum_correction, firmware.max_abs_correction_counts, ...
+             min (corrected_steps), max (corrected_steps), 4 * bin_width);
+
     command = sprintf ("CAL WRITE %d %d %08X", calibration.bin_count, ...
                        full_scale_counts, crc);
     write (device, uint8 ([command, char(10)]), "uint8");

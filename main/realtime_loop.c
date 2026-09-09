@@ -121,11 +121,10 @@ static esp_err_t arm_capture_from_usb(uint32_t sample_rate_hz,
 #endif
   capture_request_t request = calibration_mode ? CAPTURE_REQUEST_CALIBRATION
                                                : CAPTURE_REQUEST_CLOSED_LOOP;
-  atomic_store_explicit(&pending_capture_request, request,
-                        memory_order_release);
   esp_err_t error = esp_timeseries_arm(sample_rate_hz);
-  if (error != ESP_OK) {
-    atomic_store_explicit(&pending_capture_request, CAPTURE_REQUEST_NONE,
+  if (error == ESP_OK) {
+    /* Publish the start request only after the recorder accepted this ARM. */
+    atomic_store_explicit(&pending_capture_request, request,
                           memory_order_release);
   }
   return error;
@@ -421,7 +420,6 @@ static void realtime_task(void *argument) {
 #if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
   uint32_t last_armed_step_id = 0U;
 #endif
-  esp_timeseries_state_t previous_recorder_state = ESP_TIMESERIES_STATE_EMPTY;
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_rt_diag_t diagnostics;
   esp_rt_diag_t *diagnostics_ptr = &diagnostics;
@@ -508,8 +506,15 @@ static void realtime_task(void *argument) {
       arm_recorder_before_reference_step(&controller, &last_armed_step_id);
 #endif
       esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
-      if (recorder_state == ESP_TIMESERIES_STATE_ARMED &&
-          previous_recorder_state != ESP_TIMESERIES_STATE_ARMED) {
+      /*
+       * ARMED may be shorter than one control period: the USB task can arm the
+       * recorder after the state read above, and record_f32() can advance it to
+       * CAPTURING before the next 1 kHz iteration. Consume the explicit request
+       * in either active state so starting the test does not depend on observing
+       * that transient state.
+       */
+      if (recorder_state == ESP_TIMESERIES_STATE_ARMED ||
+          recorder_state == ESP_TIMESERIES_STATE_CAPTURING) {
         capture_request_t request = atomic_exchange_explicit(
             &pending_capture_request, CAPTURE_REQUEST_NONE,
             memory_order_acq_rel);
@@ -519,7 +524,6 @@ static void realtime_task(void *argument) {
           motor_controller_start_closed_loop_test(&controller);
         }
       }
-      previous_recorder_state = recorder_state;
 
       /* Kalman x[1] is deg/s; 360 deg/rev and 60 s/min give 1 RPM per 6 deg/s.
        */
@@ -528,8 +532,17 @@ static void realtime_task(void *argument) {
       motor_output_percent = motor_controller_update(
           &controller, estimated_speed_rpm,
           (float)control_dt_us * MICROSECONDS_TO_SECONDS);
-      /* Apply the 0..100% command; exactly zero selects COAST. */
-      engine_driver_set_speed(context->motor, motor_output_percent);
+      /*
+       * A zero controller command selects dynamic braking for this
+       * application: both motor terminals are clamped to the low side. Keep
+       * COAST as a distinct driver operation for initialization and fail-safe
+       * shutdown paths.
+       */
+      if (motor_output_percent == 0.0f) {
+        engine_driver_brake(context->motor);
+      } else {
+        engine_driver_set_speed(context->motor, motor_output_percent);
+      }
 
       motor_controller_status_t controller_status = {0};
       motor_controller_get_status(&controller, &controller_status);

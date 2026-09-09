@@ -13,17 +13,23 @@
  * Start conservatively. Adjust these three static variables and rebuild while
  * observing reference, error, P/I/D terms, and output in telemetry.
  */
-static float pid_kp = 0.10f;
-static float pid_ki = 0.02f;
-static float pid_kd = 0.0f;
+static float pid_kp = 0.25f;
+static float pid_ki = 3.0f;
+static float pid_kd = 0.0001f;
 
 /* Alternating step profile used for manual closed-loop tuning. */
 static float reference_low_rpm = 600.0f;
 static float reference_high_rpm = 900.0f;
-static float reference_step_period_s = 20.0f;
+static float reference_step_period_s = 4.0f;
 
 /* Low-pass time constant applied before using the speed derivative. */
 static float derivative_filter_tau_s = 0.020f;
+
+/*
+ * Back-calculation tracking time. Smaller values pull the integral term toward
+ * the realizable actuator output more quickly while the command is saturated.
+ */
+static float anti_windup_tracking_time_s = 0.20f;
 
 #if CONFIG_APP_MOTOR_OPEN_LOOP_TEST
 /* Low/high/low stages followed by COAST, synchronized to recorder ARM. */
@@ -147,23 +153,21 @@ float motor_controller_update(motor_controller_t *controller,
     candidate_integral += pid_ki * controller->error_rpm * dt;
   }
 
+  /*
+   * Back-calculation anti-windup: the difference between the requested and
+   * realizable actuator outputs drives the integral term back toward a state
+   * consistent with the saturated command. Inside the actuator range the
+   * tracking error is zero and this reduces to ordinary integral action.
+   */
   float candidate_output = controller->proportional_term + candidate_integral +
                            controller->derivative_term;
-
-  /*
-   * Conditional anti-windup: integrate inside the actuator range, or when the
-   * current error would drive a saturated output back toward that range.
-   */
-  bool output_inside_limits = candidate_output >= MOTOR_OUTPUT_MIN_PERCENT &&
-                              candidate_output <= MOTOR_OUTPUT_MAX_PERCENT;
-  bool unwinding_high_saturation =
-      candidate_output > MOTOR_OUTPUT_MAX_PERCENT && controller->error_rpm < 0;
-  bool unwinding_low_saturation =
-      candidate_output < MOTOR_OUTPUT_MIN_PERCENT && controller->error_rpm > 0;
-  if (output_inside_limits || unwinding_high_saturation ||
-      unwinding_low_saturation) {
-    controller->integral_term = candidate_integral;
+  float realizable_output = clamp(candidate_output, MOTOR_OUTPUT_MIN_PERCENT,
+                                  MOTOR_OUTPUT_MAX_PERCENT);
+  if (valid_dt) {
+    float tracking_error = realizable_output - candidate_output;
+    candidate_integral += tracking_error * dt / anti_windup_tracking_time_s;
   }
+  controller->integral_term = candidate_integral;
 
   float unsaturated_output = controller->proportional_term +
                              controller->integral_term +
