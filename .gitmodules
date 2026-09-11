@@ -19,3 +19,6 @@
 [submodule "components/esp_timeseries_recorder"]
 	path = components/esp_timeseries_recorder
 	url = git@github-ssme:smartsensingme/esp_timeseries_recorder.git
+[submodule "components/esp_angle_lut"]
+	path = components/esp_angle_lut
+	url = git@github-ssme:smartsensingme/esp_angle_lut.git
