@@ -7,3 +7,6 @@
 [submodule "components/esp-mt6701"]
 	path = components/esp-mt6701
 	url = https://github.com/smartsensingme/esp-mt6701.git
+[submodule "components/esp_rt_diagnostics"]
+	path = components/esp_rt_diagnostics
+	url = git@github-ssme:smartsensingme/esp_rt_diagnostics.git
