@@ -10,7 +10,6 @@
 #endif
 
 #include "driver/usb_serial_jtag.h"
-#include "esp_angle_lut.h"
 #include "esp_crc.h"
 #include "esp_log.h"
 #include "esp_timeseries_recorder.h"
@@ -39,15 +38,24 @@ _Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
 static const char *TAG = "TS_USB";
 static TaskHandle_t transport_task_handle;
 static esp_timeseries_usb_transport_config_t transport_config;
-/* CAL WRITE/READ are serialized by transport_task; avoid large stack arrays. */
-static int16_t calibration_transfer_buffer[ESP_ANGLE_LUT_BIN_COUNT];
 
+/** Internal helper used by USB read/write completion paths to convert Kconfig.
+ */
 static TickType_t write_timeout_ticks(void) {
   return pdMS_TO_TICKS(CONFIG_ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS);
 }
 
+/**
+ * @brief Send an exact byte count despite partial native-USB writes.
+ *
+ * Called by usb_sendf(), send_dump(), and application callbacks through
+ * command_io.write_all. Data are split into bounded driver submissions.
+ */
 static esp_err_t usb_send_all(const void *data, size_t length) {
   const uint8_t *cursor = (const uint8_t *)data;
+
+  /* Advance only by bytes accepted by the driver; any no-progress is timeout.
+   */
   while (length > 0U) {
     size_t chunk =
         length > USB_WRITE_CHUNK_BYTES ? USB_WRITE_CHUNK_BYTES : length;
@@ -62,8 +70,17 @@ static esp_err_t usb_send_all(const void *data, size_t length) {
   return ESP_OK;
 }
 
+/**
+ * @brief Receive an exact byte count despite partial native-USB reads.
+ *
+ * Exposed only to extension callbacks through command_io.read_all. This is used
+ * for application binary payloads following a recognized command line.
+ */
 static esp_err_t usb_read_all(void *data, size_t length) {
   uint8_t *cursor = (uint8_t *)data;
+
+  /* Accumulate fragments until the requested application payload is complete.
+   */
   while (length > 0U) {
     int received = usb_serial_jtag_read_bytes(
         cursor, length,
@@ -77,7 +94,13 @@ static esp_err_t usb_read_all(void *data, size_t length) {
   return ESP_OK;
 }
 
+/**
+ * @brief Format one bounded response and send every resulting byte.
+ *
+ * Called throughout the core protocol and exposed as command_io.sendf.
+ */
 static esp_err_t usb_sendf(const char *format, ...) {
+  /* Keep protocol formatting on the task stack and reject truncated replies. */
   char line[RESPONSE_LINE_BYTES];
   va_list arguments;
   va_start(arguments, format);
@@ -89,19 +112,33 @@ static esp_err_t usb_sendf(const char *format, ...) {
   return usb_send_all(line, (size_t)length);
 }
 
+/**
+ * @brief Emit the core protocol's normalized single-line error response.
+ *
+ * Called by command parsing/dump paths and exposed as command_io.send_error.
+ */
 static void send_error(const char *command, esp_err_t error,
                        const char *message) {
   usb_sendf("ERR command=%s code=%s message=%s\n", command,
             esp_err_to_name(error), message);
 }
 
+/**
+ * @brief Query the recorder and emit its normalized single-line status.
+ *
+ * Called for INFO, STATUS, successful ARM/CLEAR, and extension callbacks
+ * through command_io.send_recorder_status.
+ */
 static void send_status(const char *command) {
+  /* Convert recorder availability failures into protocol errors. */
   esp_timeseries_status_t status;
   esp_err_t error = esp_timeseries_get_status(&status);
   if (error != ESP_OK) {
     send_error(command, error, "recorder_unavailable");
     return;
   }
+
+  /* Serialize only stable public metadata; no payload bytes are accessed. */
   usb_sendf("OK command=%s protocol=%u state=%s capture_id=%" PRIu32
             " producer_rate_hz=%" PRIu32 " sample_rate_hz=%" PRIu32
             " channels=%zu samples=%zu capacity=%zu buffer_bytes=%zu\n",
@@ -111,9 +148,25 @@ static void send_status(const char *command) {
             status.buffer_bytes);
 }
 
+/* The extension receives transport operations, not the USB driver itself. */
+static const esp_timeseries_usb_command_io_t command_io = {
+    .write_all = usb_send_all,
+    .read_all = usb_read_all,
+    .sendf = usb_sendf,
+    .send_error = send_error,
+    .send_recorder_status = send_status,
+};
+
+/**
+ * @brief Serialize the complete self-describing text header preceding a DUMP.
+ *
+ * Called only by send_dump(). It validates descriptor strings before placing
+ * them in the line-oriented protocol and reports the payload CRC and geometry.
+ */
 static esp_err_t send_dump_header(const esp_timeseries_status_t *status,
                                   const esp_timeseries_capture_t *capture,
                                   uint32_t payload_crc32) {
+  /* Identify the framing/version before sending key-value metadata. */
   esp_err_t error = usb_sendf("TSRECORDER/%u\n", PROTOCOL_VERSION);
   if (error != ESP_OK) {
     return error;
@@ -136,12 +189,17 @@ static esp_err_t send_dump_header(const esp_timeseries_status_t *status,
   SEND_HEADER("byte_order=little-endian\n");
   SEND_HEADER("layout=sample-interleaved\n");
   SEND_HEADER("invalid_i16=%d\n", ESP_TIMESERIES_INVALID_I16);
+
+  /* Describe every channel sufficiently for host-side reconstruction. */
   for (size_t channel = 0; channel < capture->channel_count; channel++) {
     const esp_timeseries_channel_t *descriptor = &capture->channels[channel];
     if (strchr(descriptor->name, '\n') != NULL ||
         strchr(descriptor->name, '\r') != NULL ||
         strchr(descriptor->unit, '\n') != NULL ||
-        strchr(descriptor->unit, '\r') != NULL) {
+        strchr(descriptor->unit, '\r') != NULL ||
+        (descriptor->encoding != NULL &&
+         (strchr(descriptor->encoding, '\n') != NULL ||
+          strchr(descriptor->encoding, '\r') != NULL))) {
       return ESP_ERR_INVALID_ARG;
     }
     SEND_HEADER("channel.%zu.name=%s\n", channel, descriptor->name);
@@ -149,11 +207,15 @@ static esp_err_t send_dump_header(const esp_timeseries_status_t *status,
     SEND_HEADER("channel.%zu.scale=%.9g\n", channel, (double)descriptor->scale);
     SEND_HEADER("channel.%zu.offset=%.9g\n", channel,
                 (double)descriptor->offset);
+    SEND_HEADER("channel.%zu.encoding=%s\n", channel,
+                descriptor->encoding != NULL ? descriptor->encoding : "linear");
     SEND_HEADER("channel.%zu.saturation_count=%" PRIu32 "\n", channel,
                 capture->saturation_counts[channel]);
     SEND_HEADER("channel.%zu.invalid_count=%" PRIu32 "\n", channel,
                 capture->invalid_counts[channel]);
   }
+
+  /* Terminate framing immediately before the exact binary byte count. */
   SEND_HEADER("payload_bytes=%zu\n", capture->payload_bytes);
   SEND_HEADER("payload_crc32=%08" PRIX32 "\n", payload_crc32);
   SEND_HEADER("END-HEADER\n");
@@ -161,7 +223,14 @@ static esp_err_t send_dump_header(const esp_timeseries_status_t *status,
   return ESP_OK;
 }
 
+/**
+ * @brief Send one FULL capture as an ASCII header plus binary payload.
+ *
+ * Called only by process_command() for DUMP. The capture is deliberately left
+ * FULL after success or failure, permitting verification and retransmission.
+ */
 static void send_dump(void) {
+  /* Acquire both zero-copy data and associated stable status while FULL. */
   esp_timeseries_capture_t capture;
   esp_timeseries_status_t status;
   esp_err_t error = esp_timeseries_get_capture(&capture);
@@ -175,6 +244,7 @@ static void send_dump(void) {
     return;
   }
 
+  /* CRC covers exactly the little-endian, sample-interleaved binary payload. */
   uint32_t crc32 = esp_crc32_le(0U, (const uint8_t *)capture.samples,
                                 (uint32_t)capture.payload_bytes);
   error = send_dump_header(&status, &capture, crc32);
@@ -184,13 +254,23 @@ static void send_dump(void) {
   if (error == ESP_OK) {
     error = usb_serial_jtag_wait_tx_done(write_timeout_ticks());
   }
+
+  /* Logging is safe here because the transport task is outside the control
+   * loop. */
   if (error != ESP_OK) {
     ESP_LOGW(TAG, "DUMP %" PRIu32 " interrupted: %s", capture.capture_id,
              esp_err_to_name(error));
   }
 }
 
+/**
+ * @brief Recognize `ARM <decimal_hz>` and validate its lexical form.
+ *
+ * Called only by process_command(). Semantic rate validation belongs to the
+ * recorder or application arm handler.
+ */
 static bool parse_arm_rate(const char *line, uint32_t *rate_hz) {
+  /* Require whitespace after ARM so unrelated prefixes remain extensible. */
   if (strncasecmp(line, "ARM", 3U) != 0 || !isspace((unsigned char)line[3])) {
     return false;
   }
@@ -198,6 +278,8 @@ static bool parse_arm_rate(const char *line, uint32_t *rate_hz) {
   while (isspace((unsigned char)*value)) {
     value++;
   }
+
+  /* Accept one base-10 uint32 followed only by optional whitespace. */
   char *end = NULL;
   unsigned long parsed = strtoul(value, &end, 10);
   if (end == value) {
@@ -213,213 +295,36 @@ static bool parse_arm_rate(const char *line, uint32_t *rate_hz) {
   return true;
 }
 
-static bool parse_named_rate(const char *line, const char *command,
-                             uint32_t *rate_hz) {
-  size_t command_length = strlen(command);
-  if (strncasecmp(line, command, command_length) != 0 ||
-      !isspace((unsigned char)line[command_length])) {
-    return false;
-  }
-  const char *value = line + command_length;
-  while (isspace((unsigned char)*value)) {
-    value++;
-  }
-  char *end = NULL;
-  unsigned long parsed = strtoul(value, &end, 10);
-  if (end == value) {
-    return false;
-  }
-  while (isspace((unsigned char)*end)) {
-    end++;
-  }
-  if (*end != '\0' || parsed > UINT32_MAX) {
-    return false;
-  }
-  *rate_hz = (uint32_t)parsed;
-  return true;
-}
-
-static esp_err_t arm_capture(uint32_t rate_hz, bool calibration_mode) {
+/**
+ * @brief Dispatch ARM to application coordination or directly to the recorder.
+ *
+ * Called only by process_command().
+ */
+static esp_err_t arm_capture(uint32_t rate_hz) {
   if (transport_config.arm_handler != NULL) {
-    return transport_config.arm_handler(rate_hz, calibration_mode,
+    return transport_config.arm_handler(rate_hz,
                                         transport_config.arm_handler_context);
   }
-  return calibration_mode ? ESP_ERR_NOT_SUPPORTED : esp_timeseries_arm(rate_hz);
+  return esp_timeseries_arm(rate_hz);
 }
 
+/** Convert the two public ARM failure classes to stable protocol messages. */
 static const char *arm_error_message(esp_err_t error) {
   if (error == ESP_ERR_INVALID_ARG) {
     return "invalid_sample_rate";
   }
-  if (error == ESP_ERR_NOT_SUPPORTED) {
-    return "calibration_profile_disabled";
-  }
   return "recorder_not_empty";
 }
 
-static void send_calibration_status(const char *command) {
-  esp_angle_lut_status_t status;
-  esp_angle_lut_get_status(&status);
-  usb_sendf("OK command=%s protocol=%u loaded=%u enabled=%u format=%u "
-            "bins=%u full_scale_counts=%" PRIu32
-            " max_abs_correction_counts=%" PRIu32 " generation=%" PRIu32
-            " crc32=%08" PRIX32 "\n",
-            command, PROTOCOL_VERSION, status.loaded, status.enabled,
-            status.format_version, status.bin_count, status.full_scale_counts,
-            status.max_abs_correction_counts, status.generation,
-            status.payload_crc32);
-}
-
-static bool parse_cal_write(const char *line, size_t *bin_count,
-                            uint32_t *full_scale_counts,
-                            uint32_t *payload_crc32) {
-  unsigned long parsed_bins = 0UL;
-  unsigned long parsed_full_scale = 0UL;
-  unsigned long parsed_crc = 0UL;
-  char extra = '\0';
-  int fields = sscanf(line, "CAL WRITE %lu %lu %lx %c", &parsed_bins,
-                      &parsed_full_scale, &parsed_crc, &extra);
-  if (fields != 3 || parsed_bins > SIZE_MAX || parsed_full_scale > UINT32_MAX ||
-      parsed_crc > UINT32_MAX) {
-    return false;
-  }
-  *bin_count = (size_t)parsed_bins;
-  *full_scale_counts = (uint32_t)parsed_full_scale;
-  *payload_crc32 = (uint32_t)parsed_crc;
-  return true;
-}
-
-static void receive_calibration(size_t bin_count, uint32_t full_scale_counts,
-                                uint32_t payload_crc32) {
-  if (bin_count != ESP_ANGLE_LUT_BIN_COUNT) {
-    send_error("CAL_WRITE", ESP_ERR_INVALID_SIZE, "unexpected_bin_count");
-    return;
-  }
-  if (full_scale_counts != ESP_ANGLE_LUT_FULL_SCALE_COUNTS) {
-    send_error("CAL_WRITE", ESP_ERR_INVALID_SIZE,
-               "unexpected_full_scale_counts");
-    return;
-  }
-  esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
-  if (recorder_state == ESP_TIMESERIES_STATE_ARMED ||
-      recorder_state == ESP_TIMESERIES_STATE_CAPTURING) {
-    send_error("CAL_WRITE", ESP_ERR_INVALID_STATE, "capture_in_progress");
-    return;
-  }
-
-  esp_err_t error =
-      usb_sendf("OK command=CAL_WRITE state=READY bytes=%zu bins=%zu\n",
-                sizeof(calibration_transfer_buffer), bin_count);
-  if (error == ESP_OK) {
-    error = usb_read_all(calibration_transfer_buffer,
-                         sizeof(calibration_transfer_buffer));
-  }
-  esp_angle_lut_install_failure_t failure = ESP_ANGLE_LUT_INSTALL_FAILURE_NONE;
-  if (error == ESP_OK) {
-    error = esp_angle_lut_install_detailed(calibration_transfer_buffer,
-                                           bin_count, full_scale_counts,
-                                           payload_crc32, &failure);
-  }
-  if (error != ESP_OK) {
-    const char *reason = error == ESP_ERR_TIMEOUT
-                             ? "payload_timeout"
-                             : esp_angle_lut_install_failure_name(failure);
-    ESP_LOGE(
-        TAG, "CAL WRITE failed: reason=%s error=%s stack_free_min=%u B", reason,
-        esp_err_to_name(error),
-        (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    send_error("CAL_WRITE", error, reason);
-    return;
-  }
-  ESP_LOGI(TAG, "CAL WRITE installed; stack_free_min=%u B",
-           (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-  send_calibration_status("CAL_WRITE");
-}
-
-static void send_calibration(void) {
-  esp_angle_lut_status_t status;
-  esp_err_t error = esp_angle_lut_read(calibration_transfer_buffer,
-                                       ESP_ANGLE_LUT_BIN_COUNT, &status);
-  if (error != ESP_OK) {
-    send_error("CAL_READ", error, "calibration_not_loaded");
-    return;
-  }
-  error = usb_sendf("ANGLELUT/%u\n", ESP_ANGLE_LUT_FORMAT_VERSION);
-  if (error == ESP_OK) {
-    error = usb_sendf("bins=%u\n", status.bin_count);
-  }
-  if (error == ESP_OK) {
-    error =
-        usb_sendf("full_scale_counts=%" PRIu32 "\n", status.full_scale_counts);
-  }
-  if (error == ESP_OK) {
-    error = usb_sendf("generation=%" PRIu32 "\n", status.generation);
-  }
-  if (error == ESP_OK) {
-    error = usb_sendf("enabled=%u\n", status.enabled);
-  }
-  if (error == ESP_OK) {
-    error = usb_sendf("encoding=int16\nbyte_order=little-endian\n");
-  }
-  if (error == ESP_OK) {
-    error = usb_sendf(
-        "payload_bytes=%zu\npayload_crc32=%08" PRIX32 "\nEND-HEADER\n",
-        sizeof(calibration_transfer_buffer), status.payload_crc32);
-  }
-  if (error == ESP_OK) {
-    error = usb_send_all(calibration_transfer_buffer,
-                         sizeof(calibration_transfer_buffer));
-  }
-  if (error != ESP_OK) {
-    ESP_LOGW(TAG, "CAL READ interrupted: %s", esp_err_to_name(error));
-  }
-}
-
-static bool process_calibration_command(const char *line) {
-  if (strcasecmp(line, "CAL STATUS") == 0) {
-    send_calibration_status("CAL_STATUS");
-  } else if (strcasecmp(line, "CAL READ") == 0) {
-    send_calibration();
-  } else if (strcasecmp(line, "CAL ENABLE") == 0 ||
-             strcasecmp(line, "CAL DISABLE") == 0) {
-    bool enabled = strcasecmp(line, "CAL ENABLE") == 0;
-    esp_err_t error = esp_angle_lut_set_enabled(enabled);
-    if (error == ESP_OK) {
-      send_calibration_status(enabled ? "CAL_ENABLE" : "CAL_DISABLE");
-    } else {
-      send_error(enabled ? "CAL_ENABLE" : "CAL_DISABLE", error,
-                 "calibration_not_loaded");
-    }
-  } else if (strcasecmp(line, "CAL CLEAR") == 0) {
-    esp_err_t error = esp_angle_lut_clear();
-    if (error == ESP_OK) {
-      send_calibration_status("CAL_CLEAR");
-    } else {
-      send_error("CAL_CLEAR", error, "nvs_error");
-    }
-  } else {
-    uint32_t rate_hz = 0U;
-    if (parse_named_rate(line, "CAL START", &rate_hz)) {
-      esp_err_t error = arm_capture(rate_hz, true);
-      if (error == ESP_OK) {
-        send_status("CAL_START");
-      } else {
-        send_error("CAL_START", error, arm_error_message(error));
-      }
-      return true;
-    }
-    size_t bin_count = 0U;
-    uint32_t full_scale_counts = 0U;
-    uint32_t crc32 = 0U;
-    if (!parse_cal_write(line, &bin_count, &full_scale_counts, &crc32)) {
-      return false;
-    }
-    receive_calibration(bin_count, full_scale_counts, crc32);
-  }
-  return true;
-}
-
+/**
+ * @brief Dispatch one complete command line and send exactly one response path.
+ *
+ * Called only by transport_task(). Core commands take precedence; otherwise an
+ * ARM form is parsed and finally the optional application callback is offered
+ * the untouched line.
+ */
 static void process_command(const char *line) {
+  /* Handle fixed core commands that do not carry arguments. */
   if (strcasecmp(line, "PING") == 0) {
     usb_sendf("OK command=PING protocol=%u\n", PROTOCOL_VERSION);
   } else if (strcasecmp(line, "INFO") == 0 || strcasecmp(line, "STATUS") == 0) {
@@ -434,28 +339,40 @@ static void process_command(const char *line) {
       send_error("CLEAR", error, "capture_not_full");
     }
   } else if (strcasecmp(line, "HELP") == 0) {
-    usb_sendf("OK command=HELP commands=PING,INFO,STATUS,ARM_<hz>,DUMP,CLEAR "
-              "CAL_START_<hz>,CAL_STATUS,CAL_WRITE,CAL_READ,CAL_ENABLE,"
-              "CAL_DISABLE,CAL_CLEAR "
-              "rate_rule=exact_divisor_of_producer_rate\n");
-  } else if (strncasecmp(line, "CAL ", 4U) == 0 &&
-             process_calibration_command(line)) {
-    return;
+    const char *extension = transport_config.extension_help;
+    usb_sendf(
+        "OK command=HELP commands=PING,INFO,STATUS,ARM_<hz>,DUMP,CLEAR%s%s "
+        "rate_rule=exact_divisor_of_producer_rate\n",
+        extension != NULL && extension[0] != '\0' ? "," : "",
+        extension != NULL ? extension : "");
   } else {
+    /* Parse ARM before delegating genuinely unknown commands to the
+     * application. */
     uint32_t rate_hz = 0U;
     if (parse_arm_rate(line, &rate_hz)) {
-      esp_err_t error = arm_capture(rate_hz, false);
+      esp_err_t error = arm_capture(rate_hz);
       if (error == ESP_OK) {
         send_status("ARM");
       } else {
         send_error("ARM", error, arm_error_message(error));
       }
+    } else if (transport_config.command_handler != NULL &&
+               transport_config.command_handler(
+                   line, &command_io,
+                   transport_config.command_handler_context)) {
+      return;
     } else {
       send_error("UNKNOWN", ESP_ERR_INVALID_ARG, "use_HELP");
     }
   }
 }
 
+/**
+ * @brief FreeRTOS task that frames command lines from native USB input.
+ *
+ * Created only by esp_timeseries_usb_transport_start(). It calls
+ * process_command() synchronously, so command callbacks execute in this task.
+ */
 static void transport_task(void *argument) {
   (void)argument;
   char line[COMMAND_LINE_BYTES];
@@ -465,10 +382,14 @@ static void transport_task(void *argument) {
 
   ESP_LOGI(TAG, "Recorder protocol ready on native USB Serial/JTAG");
   while (true) {
+    /* Poll in short intervals so the task does not spin while the host is idle.
+     */
     int received = usb_serial_jtag_read_bytes(input, sizeof(input),
                                               pdMS_TO_TICKS(USB_READ_WAIT_MS));
     for (int index = 0; index < received; index++) {
       char character = (char)input[index];
+
+      /* Normalize CRLF/LF and dispatch only complete, nonempty lines. */
       if (character == '\r') {
         continue;
       }
@@ -482,6 +403,7 @@ static void transport_task(void *argument) {
         line_length = 0U;
         line_overflow = false;
       } else if (!line_overflow) {
+        /* Consume the rest of an oversized line before reporting one error. */
         if (line_length + 1U < sizeof(line)) {
           line[line_length++] = character;
         } else {
@@ -492,13 +414,29 @@ static void transport_task(void *argument) {
   }
 }
 
+/**
+ * @brief Validate configuration, install USB, and create the command task.
+ * @see Declaration in esp_timeseries_usb_transport.h for the public contract.
+ */
 esp_err_t esp_timeseries_usb_transport_start(
     const esp_timeseries_usb_transport_config_t *config) {
+  /* This component requires exclusive ownership of driver and task resources.
+   */
   if (transport_task_handle != NULL || usb_serial_jtag_is_driver_installed()) {
     return ESP_ERR_INVALID_STATE;
   }
   transport_config =
       config != NULL ? *config : (esp_timeseries_usb_transport_config_t){0};
+
+  /* Prevent the application HELP suffix from injecting protocol lines. */
+  if (transport_config.extension_help != NULL &&
+      (strchr(transport_config.extension_help, '\n') != NULL ||
+       strchr(transport_config.extension_help, '\r') != NULL)) {
+    transport_config = (esp_timeseries_usb_transport_config_t){0};
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  /* Install Kconfig-sized driver rings before starting the parser task. */
   usb_serial_jtag_driver_config_t driver_config = {
       .tx_buffer_size = CONFIG_ESP_TIMESERIES_USB_TX_BUFFER_BYTES,
       .rx_buffer_size = CONFIG_ESP_TIMESERIES_USB_RX_BUFFER_BYTES,
@@ -507,10 +445,14 @@ esp_err_t esp_timeseries_usb_transport_start(
   if (error != ESP_OK) {
     return error;
   }
+
+  /* Pin low-priority transport work away from the application's control core.
+   */
   BaseType_t created = xTaskCreatePinnedToCore(
       transport_task, "timeseries_usb", TRANSPORT_TASK_STACK_SIZE, NULL,
       TRANSPORT_TASK_PRIORITY, &transport_task_handle, TRANSPORT_CORE_ID);
   if (created != pdPASS) {
+    /* Roll back partial startup so the caller may retry cleanly. */
     transport_task_handle = NULL;
     usb_serial_jtag_driver_uninstall();
     return ESP_ERR_NO_MEM;
@@ -518,7 +460,12 @@ esp_err_t esp_timeseries_usb_transport_start(
   return ESP_OK;
 }
 
+/**
+ * @brief Delete the command task and release the native USB driver.
+ * @see Declaration in esp_timeseries_usb_transport.h for the public contract.
+ */
 void esp_timeseries_usb_transport_stop(void) {
+  /* Stop callbacks and parsing before invalidating the underlying driver. */
   if (transport_task_handle != NULL) {
     vTaskDelete(transport_task_handle);
     transport_task_handle = NULL;
@@ -530,12 +477,14 @@ void esp_timeseries_usb_transport_stop(void) {
 
 #else
 
+/** Disabled-build stub; see the public header for behavior. */
 esp_err_t esp_timeseries_usb_transport_start(
     const esp_timeseries_usb_transport_config_t *config) {
   (void)config;
   return ESP_OK;
 }
 
+/** Disabled-build stub; intentionally performs no work. */
 void esp_timeseries_usb_transport_stop(void) {}
 
 #endif

@@ -6,19 +6,30 @@ menu "ESP Time-Series USB Transport"
         default y
         help
             Reserve the ESP32-S3 native USB Serial/JTAG CDC port for recorder
-            commands and binary dumps. Console output must use UART only.
+            commands and binary dumps. The component creates a Core 0 command
+            task and owns the native USB Serial/JTAG driver. Console output must
+            use UART only so logs cannot corrupt a binary payload.
 
     config ESP_TIMESERIES_USB_RX_BUFFER_BYTES
         int "USB command receive buffer (bytes)"
         depends on ESP_TIMESERIES_USB_TRANSPORT_ENABLE
         range 128 4096
         default 512
+        help
+            Native USB driver ring used for ASCII command input and extension
+            binary payloads. This is not the maximum command length: core
+            command lines are limited to 63 characters plus termination.
 
     config ESP_TIMESERIES_USB_TX_BUFFER_BYTES
         int "USB transmission buffer (bytes)"
         depends on ESP_TIMESERIES_USB_TRANSPORT_ENABLE
         range 1024 16384
         default 16384
+        help
+            Native USB driver ring used for responses and binary recorder
+            dumps. A larger ring can improve throughput when the host consumes
+            data promptly, at the cost of additional internal RAM. Payloads are
+            submitted to the driver in smaller fixed chunks.
 
     config ESP_TIMESERIES_USB_WRITE_TIMEOUT_MS
         int "Per-block USB write timeout (ms)"
@@ -26,7 +37,9 @@ menu "ESP Time-Series USB Transport"
         range 100 30000
         default 3000
         help
-            Abort a dump if the host stops consuming data. The recorder stays
-            FULL, allowing DUMP to be requested again after reconnecting.
+            Maximum no-progress interval for each exact read/write operation
+            used by the core protocol or an extension callback. A timed-out
+            dump leaves the recorder FULL, allowing DUMP to be requested again
+            after reconnecting.
 
 endmenu
