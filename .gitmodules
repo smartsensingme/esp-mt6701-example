@@ -10,3 +10,6 @@
 [submodule "components/esp_rt_diagnostics"]
 	path = components/esp_rt_diagnostics
 	url = git@github-ssme:smartsensingme/esp_rt_diagnostics.git
+[submodule "components/esp_rt_diagnostics_reporter"]
+	path = components/esp_rt_diagnostics_reporter
+	url = git@github-ssme:smartsensingme/esp_rt_diagnostics_reporter.git
