@@ -22,3 +22,6 @@
 [submodule "components/esp_angle_lut"]
 	path = components/esp_angle_lut
 	url = git@github-ssme:smartsensingme/esp_angle_lut.git
+[submodule "components/esp_timeseries_usb_transport"]
+	path = components/esp_timeseries_usb_transport
+	url = git@github-ssme:smartsensingme/esp_timeseries_usb_transport.git
