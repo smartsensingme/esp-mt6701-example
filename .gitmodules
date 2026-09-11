@@ -16,3 +16,6 @@
 [submodule "components/esp_pid"]
 	path = components/esp_pid
 	url = git@github-ssme:smartsensingme/esp_pid.git
+[submodule "components/esp_timeseries_recorder"]
+	path = components/esp_timeseries_recorder
+	url = git@github-ssme:smartsensingme/esp_timeseries_recorder.git
