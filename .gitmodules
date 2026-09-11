@@ -9,19 +9,19 @@
 	url = https://github.com/smartsensingme/esp-mt6701.git
 [submodule "components/esp_rt_diagnostics"]
 	path = components/esp_rt_diagnostics
-	url = git@github-ssme:smartsensingme/esp_rt_diagnostics.git
+	url = https://github.com/smartsensingme/esp_rt_diagnostics.git
 [submodule "components/esp_rt_diagnostics_reporter"]
 	path = components/esp_rt_diagnostics_reporter
-	url = git@github-ssme:smartsensingme/esp_rt_diagnostics_reporter.git
+	url = https://github.com/smartsensingme/esp_rt_diagnostics_reporter.git
 [submodule "components/esp_pid"]
 	path = components/esp_pid
-	url = git@github-ssme:smartsensingme/esp_pid.git
+	url = https://github.com/smartsensingme/esp_pid.git
 [submodule "components/esp_timeseries_recorder"]
 	path = components/esp_timeseries_recorder
-	url = git@github-ssme:smartsensingme/esp_timeseries_recorder.git
+	url = https://github.com/smartsensingme/esp_timeseries_recorder.git
 [submodule "components/esp_angle_lut"]
 	path = components/esp_angle_lut
-	url = git@github-ssme:smartsensingme/esp_angle_lut.git
+	url = https://github.com/smartsensingme/esp_angle_lut.git
 [submodule "components/esp_timeseries_usb_transport"]
 	path = components/esp_timeseries_usb_transport
-	url = git@github-ssme:smartsensingme/esp_timeseries_usb_transport.git
+	url = https://github.com/smartsensingme/esp_timeseries_usb_transport.git

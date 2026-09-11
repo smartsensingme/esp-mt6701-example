@@ -2,9 +2,11 @@ build/
 sdkconfig
 sdkconfig.old
 dependencies.lock
+managed_components/
 *.swp
 *.o
 *.d
+*.mat
 .cache/
 .vscode/
 
