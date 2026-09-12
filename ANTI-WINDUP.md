@@ -73,14 +73,15 @@ b, & x>b.
 \end{cases}
 \]
 
-Para o controle de velocidade deste projeto, o comando está limitado a
+Na configuração atual do controle de velocidade deste projeto, o comando está
+limitado a
 
 \[
-0\%\leq u_{sat}\leq100\%.
+-100\%\leq u_{sat}\leq100\%.
 \]
 
-Assim, o PID pode solicitar 130%, mas a ponte somente recebe 100%. Também pode
-solicitar -20%, embora a interface atual não aceite uma ação contínua negativa.
+Assim, o PID pode solicitar 130%, mas a ponte somente recebe 100%. Da mesma
+forma, uma solicitação de -120% é limitada a -100%.
 
 ## 3. Como nasce o integral windup
 
@@ -419,14 +420,16 @@ Em uma aplicação real, devem ser verificados pelo menos:
 
 - ponteiros válidos;
 - `dt > 0` e um limite máximo plausível para `dt`;
-- `tracking_time > 0`;
+- `tracking_time >= 0`, adotando zero apenas quando se deseja desabilitar o
+  back-calculation;
 - valores finitos nas medições e nos estados;
 - inicialização ou reinicialização coerente do integrador;
 - proteção numérica adicional para situações de falha prolongada.
 
 O código deste projeto está em
-[`main/motor_controller.c`](main/motor_controller.c). Ele usa \(T_t=0{,}20\) s
-e executa no loop de controle de 1 kHz.
+[`components/esp_pid/esp_pid.c`](components/esp_pid/esp_pid.c), configurado por
+[`main/motor_controller.c`](main/motor_controller.c). A malha de velocidade usa
+\(T_t=0{,}20\) s e executa no loop de controle de 1 kHz.
 
 O cálculo da derivada foi mantido simples nesse exemplo para destacar o
 anti-windup. Em uma aplicação prática, a derivada da medição normalmente deve
@@ -497,20 +500,23 @@ com \(K_i=0\) cria uma memória dinâmica que já não corresponde a um P ou PD
 puro. Isso pode ser desejado em estruturas especiais de rastreamento, mas deve
 ser uma decisão explícita.
 
-## 10. Limitação particular da ponte H deste projeto
+## 10. Particularidades da ponte H deste projeto
 
 No modelo mais simples, `0%` representa ação nula. Entretanto, a aplicação
 atual possui a seguinte política:
 
 ```text
 saída maior que 0%  -> acionamento PWM para frente
+saída menor que 0%  -> acionamento PWM reverso
 saída igual a 0%   -> freio dinâmico
 ```
 
 No freio dinâmico, os terminais do motor são conectados de forma a dissipar sua
 energia eletromecânica e produzir torque contrário ao movimento. Portanto,
 `0%` não significa necessariamente torque zero. Existe uma mudança descontínua
-entre um pequeno comando positivo e o freio completo.
+entre um pequeno comando, em qualquer sentido, e o freio completo. Além disso,
+se o motor ainda gira para frente, um comando negativo aplica contracorrente e
+pode produzir uma corrente significativamente maior que a frenagem dinâmica.
 
 O back-calculation continua útil porque corrige a inconsistência numérica da
 saturação. Porém, ele não transforma essa comutação física em uma ação
@@ -520,7 +526,7 @@ técnicas adicionais:
 - histerese para entrar e sair do modo de frenagem;
 - tempo mínimo ou máximo de permanência no freio;
 - frenagem PWM com intensidade controlável;
-- comando de torque com sinal, por exemplo de -100% a +100%;
+- limites distintos para o acionamento positivo e o torque reverso;
 - ganhos diferentes para aceleração e desaceleração;
 - máquina de estados que represente `DRIVE`, `BRAKE` e `COAST`.
 

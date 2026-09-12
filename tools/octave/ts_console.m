@@ -39,19 +39,19 @@ function exit_console = run_port_session (port_name)
     safe_command (device, "STATUS");
     change_port = false;
     while (! change_port)
-      choice = menu (sprintf ("Gravador ESP32 - %s", port_name), ...
-                     "Executar ensaio completo (malha fechada)", ...
-                     "Calibrar linearidade angular", ...
-                     "Gerenciar calibracao angular", ...
-                     "Receber uma captura FULL", ...
-                     "Atualizar status", ...
-                     "Limpar o buffer cheio", ...
-                     "Armar sem aguardar (avancado)", ...
-                     "Informacoes do dispositivo", ...
-                     "Testar conexao (PING)", ...
-                     "Ajuda do protocolo", ...
-                     "Escolher outra porta", ...
-                     "Sair");
+      choice = text_menu (sprintf ("Gravador ESP32 - %s", port_name), ...
+                          "Executar ensaio completo (malha fechada)", ...
+                          "Calibrar linearidade angular", ...
+                          "Gerenciar calibracao angular", ...
+                          "Receber uma captura FULL", ...
+                          "Atualizar status", ...
+                          "Limpar o buffer cheio", ...
+                          "Armar sem aguardar (avancado)", ...
+                          "Informacoes do dispositivo", ...
+                          "Testar conexao (PING)", ...
+                          "Ajuda do protocolo", ...
+                          "Escolher outra porta", ...
+                          "Sair");
       switch (choice)
         case 1
           run_complete_experiment (device);
@@ -111,7 +111,7 @@ function port_name = choose_port ()
     else
       title_text = "Selecione a porta USB nativa do ESP32-S3";
     endif
-    choice = menu (title_text, options{:});
+    choice = text_menu (title_text, options{:});
 
     if (choice >= 1 && choice <= numel (ports))
       port_name = ports{choice};
@@ -163,10 +163,10 @@ function run_complete_experiment (device)
     state = response_field (status, "state");
 
     if (strcmp (state, "FULL"))
-      choice = menu ("Ja existe uma captura FULL", ...
-                     "Receber a captura existente", ...
-                     "Limpar e iniciar um novo ensaio", ...
-                     "Cancelar");
+      choice = text_menu ("Ja existe uma captura FULL", ...
+                          "Receber a captura existente", ...
+                          "Limpar e iniciar um novo ensaio", ...
+                          "Cancelar");
       if (choice == 1)
         receive_full_capture (device);
         return;
@@ -177,8 +177,8 @@ function run_complete_experiment (device)
         return;
       endif
     elseif (strcmp (state, "ARMED") || strcmp (state, "CAPTURING"))
-      choice = menu (sprintf ("Ja existe uma captura %s", state), ...
-                     "Aguardar e receber esta captura", "Cancelar");
+      choice = text_menu (sprintf ("Ja existe uma captura %s", state), ...
+                          "Aguardar e receber esta captura", "Cancelar");
       if (choice == 1 && wait_until_full (device))
         receive_full_capture (device);
       endif
@@ -191,6 +191,10 @@ function run_complete_experiment (device)
     if (isempty (rate_hz))
       return;
     endif
+    [control_config, configured] = configure_closed_loop_experiment (device);
+    if (! configured)
+      return;
+    endif
     [output_file, clear_after, accepted] = capture_options ();
     if (! accepted)
       return;
@@ -200,7 +204,7 @@ function run_complete_experiment (device)
     require_ok (response, "ARM");
     fprintf ("%s\n", response);
     if (wait_until_full (device))
-      download_capture (device, output_file, clear_after);
+      download_capture (device, output_file, clear_after, control_config);
     endif
   catch err
     fprintf (2, "Falha no ensaio: %s\n", err.message);
@@ -211,6 +215,10 @@ function completed = wait_until_full (device)
   completed = false;
   wait_timer = tic ();
   duration_announced = false;
+  % STATUS traverses native USB and can perturb a tightly scheduled firmware.
+  % Two seconds still gives useful progress feedback while reducing protocol
+  % traffic to one quarter of the former 500 ms polling rate.
+  status_poll_interval_s = 2.0;
   fprintf ("Aguardando o buffer; pressione Ctrl+C para cancelar.\n");
   while (true)
     response = ts_command (device, "STATUS", false);
@@ -237,7 +245,7 @@ function completed = wait_until_full (device)
       fprintf ("\n");
       error ("O gravador voltou para EMPTY antes de concluir a captura");
     endif
-    pause (0.5);
+    pause (status_poll_interval_s);
   endwhile
 endfunction
 
@@ -259,14 +267,128 @@ function receive_full_capture (device)
   end_try_catch
 endfunction
 
-function download_capture (device, output_file, clear_after)
+function download_capture (device, output_file, clear_after, control_config)
+  if (nargin < 4)
+    control_config = [];
+  endif
   fprintf ("Recebendo a captura binaria...\n");
-  capture = ts_capture (device, output_file, clear_after, false);
+  additional_fields = struct ();
+  if (! isempty (control_config))
+    additional_fields.control_config = control_config;
+  endif
+  capture = ts_capture (device, output_file, clear_after, false, ...
+                        additional_fields);
   figure_handle = ts_plot_capture (capture);
   drawnow ();
   fprintf (["Foi aberta uma figura com os canais da captura. ", ...
             "Feche-a para voltar ao menu.\n"]);
   waitfor (figure_handle);
+endfunction
+
+function [configuration, accepted] = configure_closed_loop_experiment (device)
+  accepted = false;
+  configuration = read_control_configuration (device);
+  while (true)
+    fprintf ("\nParametros volateis do proximo ensaio:\n");
+    fprintf ("  Kp:                  %.9g\n", configuration.kp);
+    fprintf ("  Ki:                  %.9g\n", configuration.ki);
+    fprintf ("  Kd:                  %.9g\n", configuration.kd);
+    fprintf ("  Periodo dos degraus: %.9g s\n\n", ...
+             configuration.reference_step_period_s);
+    fprintf ("  1 - Manter estes valores\n");
+    fprintf ("  2 - Alterar Kp, Ki, Kd e periodo\n");
+    fprintf ("  3 - Restaurar padroes do firmware\n");
+    fprintf ("  4 - Cancelar ensaio\n");
+
+    entered_choice = strtrim (input ("Opcao [1]: ", "s"));
+    if (isempty (entered_choice))
+      choice = 1;
+    else
+      choice = str2double (entered_choice);
+    endif
+
+    if (! isscalar (choice) || ! isfinite (choice) || ...
+        choice != fix (choice) || choice < 1 || choice > 4)
+      fprintf ("Opcao invalida. Digite um numero entre 1 e 4.\n");
+      continue;
+    endif
+
+    if (choice == 1)
+      accepted = true;
+      return;
+    elseif (choice == 2)
+      candidate = configuration;
+      candidate.kp = input_default_number ("Kp [%/RPM]", candidate.kp);
+      candidate.ki = input_default_number ("Ki [%/(RPM.s)]", candidate.ki);
+      candidate.kd = input_default_number ("Kd [%.s/RPM]", candidate.kd);
+      candidate.reference_step_period_s = input_default_number ( ...
+          "Periodo dos degraus [s]", candidate.reference_step_period_s);
+      if (! valid_control_configuration (candidate))
+        fprintf (2, ["Valores fora dos limites: 0<=Kp<=100, ", ...
+                     "0<=Ki<=1000, 0<=Kd<=10 e 0.1<=periodo<=3600 s.\n"]);
+        continue;
+      endif
+      command = sprintf ("CONTROL SET %.9g %.9g %.9g %.9g", ...
+                         candidate.kp, candidate.ki, candidate.kd, ...
+                         candidate.reference_step_period_s);
+      response = ts_command (device, command, false);
+      require_ok (response, "CONTROL_SET");
+      fprintf ("%s\n", response);
+      configuration = parse_control_configuration (response);
+    elseif (choice == 3)
+      response = ts_command (device, "CONTROL DEFAULTS", false);
+      require_ok (response, "CONTROL_DEFAULTS");
+      fprintf ("%s\n", response);
+      configuration = parse_control_configuration (response);
+    else
+      return;
+    endif
+  endwhile
+endfunction
+
+function valid = valid_control_configuration (configuration)
+  values = [configuration.kp, configuration.ki, configuration.kd, ...
+            configuration.reference_step_period_s];
+  valid = all (isfinite (values)) && ...
+          configuration.kp >= 0 && configuration.kp <= 100 && ...
+          configuration.ki >= 0 && configuration.ki <= 1000 && ...
+          configuration.kd >= 0 && configuration.kd <= 10 && ...
+          configuration.reference_step_period_s >= 0.1 && ...
+          configuration.reference_step_period_s <= 3600;
+endfunction
+
+function value = input_default_number (label, default_value)
+  entered = strtrim (input (sprintf ("%s [%.9g]: ", label, default_value), ...
+                            "s"));
+  if (isempty (entered))
+    value = default_value;
+    return;
+  endif
+  value = str2double (entered);
+  if (! isscalar (value) || ! isfinite (value))
+    error ("Valor numerico invalido para %s", label);
+  endif
+endfunction
+
+function configuration = read_control_configuration (device)
+  response = ts_command (device, "CONTROL GET", false);
+  require_ok (response, "CONTROL_GET");
+  fprintf ("\n%s\n", response);
+  configuration = parse_control_configuration (response);
+endfunction
+
+function configuration = parse_control_configuration (response)
+  configuration = struct ( ...
+      "kp", str2double (response_field (response, "kp")), ...
+      "ki", str2double (response_field (response, "ki")), ...
+      "kd", str2double (response_field (response, "kd")), ...
+      "reference_step_period_s", ...
+      str2double (response_field (response, "reference_step_period_s")));
+  values = [configuration.kp, configuration.ki, configuration.kd, ...
+            configuration.reference_step_period_s];
+  if (any (! isfinite (values)))
+    error ("Resposta CONTROL incompleta: %s", response);
+  endif
 endfunction
 
 function run_angle_calibration (device)
@@ -278,8 +400,8 @@ function run_angle_calibration (device)
     if (strcmp (state, "ARMED") || strcmp (state, "CAPTURING"))
       error ("Ja existe uma captura %s em andamento", state);
     elseif (strcmp (state, "FULL"))
-      choice = menu ("O buffer contem uma captura que sera substituida", ...
-                     "Cancelar", "Limpar e continuar");
+      choice = text_menu ("O buffer contem uma captura que sera substituida", ...
+                          "Cancelar", "Limpar e continuar");
       if (choice != 2)
         return;
       endif
@@ -287,9 +409,10 @@ function run_angle_calibration (device)
       require_ok (response, "CLEAR");
     endif
 
-    choice = menu (["O motor executara 40%, 55% e 40% em malha aberta, ", ...
-                    "oito segundos por patamar. Mantenha o eixo livre."], ...
-                   "Cancelar", "Iniciar calibracao a 500 Hz");
+    choice = text_menu (...
+        ["O motor executara 40%, 55% e 40% em malha aberta, ", ...
+         "oito segundos por patamar. Mantenha o eixo livre."], ...
+        "Cancelar", "Iniciar calibracao a 500 Hz");
     if (choice != 2)
       return;
     endif
@@ -322,17 +445,17 @@ function run_angle_calibration (device)
     fprintf ("LUT: %d pontos, %d voltas, CRC %08X.\n", ...
              calibration.bin_count, calibration.revolution_count, ...
              calibration.payload_crc32);
-    ts_plot_calibration (calibration);
+    esp_angle_lut_plot (calibration);
 
     if (calibration.speed_reduction_percent < 50 || ...
         calibration.reduction_percent <= 0)
       fprintf (2, ["A validacao nao atingiu os limites recomendados. ", ...
                    "Inspecione o grafico antes de enviar.\n"]);
     endif
-    choice = menu ("Resultado da calibracao", ...
-                   "Manter somente no arquivo MAT", ...
-                   "Enviar, verificar e habilitar no ESP32", ...
-                   "Descartar do ESP32");
+    choice = text_menu ("Resultado da calibracao", ...
+                        "Manter somente no arquivo MAT", ...
+                        "Enviar, verificar e habilitar no ESP32", ...
+                        "Descartar do ESP32");
     if (choice == 2)
       installed = ts_calibration_write (device, calibration, true);
       fprintf (["Calibracao instalada e verificada: geracao %d, ", ...
@@ -359,9 +482,9 @@ function manage_angle_calibration (device)
                err.message);
       return;
     end_try_catch
-    choice = menu (title_text, "Atualizar status", "Habilitar LUT", ...
-                   "Desabilitar LUT", "Ler e salvar LUT", ...
-                   "Apagar calibracao", "Voltar");
+    choice = text_menu (title_text, "Atualizar status", "Habilitar LUT", ...
+                        "Desabilitar LUT", "Ler e salvar LUT", ...
+                        "Apagar calibracao", "Voltar");
     try
       switch (choice)
         case 1
@@ -385,8 +508,9 @@ function manage_angle_calibration (device)
           xlabel ("angulo bruto [deg]");
           ylabel ("correcao [deg]");
         case 5
-          confirm = menu ("Apagar permanentemente a calibracao do ESP32?", ...
-                          "Cancelar", "Apagar");
+          confirm = text_menu (...
+              "Apagar permanentemente a calibracao do ESP32?", ...
+              "Cancelar", "Apagar");
           if (confirm == 2)
             safe_command (device, "CAL CLEAR");
           endif
@@ -411,8 +535,9 @@ function [output_file, clear_after, accepted] = capture_options ()
   else
     output_file = entered;
   endif
-  choice = menu ("Depois de validar o download e o CRC, limpar o buffer?", ...
-                 "Limpar depois do CRC", "Manter o buffer FULL", "Cancelar");
+  choice = text_menu (...
+      "Depois de validar o download e o CRC, limpar o buffer?", ...
+      "Limpar depois do CRC", "Manter o buffer FULL", "Cancelar");
   if (choice == 1)
     clear_after = true;
     accepted = true;
@@ -427,7 +552,7 @@ function rate_hz = choose_rate ()
            "200 Hz", "100 Hz", ...
            "50 Hz", "20 Hz", "10 Hz", "Digitar outra taxa", "Cancelar"};
   values = [250, 500, 1000, 200, 100, 50, 20, 10];
-  choice = menu ("Escolha a taxa de amostragem da captura", rates{:});
+  choice = text_menu ("Escolha a taxa de amostragem da captura", rates{:});
   if (choice >= 1 && choice <= numel (values))
     rate_hz = values(choice);
   elseif (choice == numel (values) + 1)
@@ -442,11 +567,40 @@ function rate_hz = choose_rate ()
 endfunction
 
 function clear_capture (device)
-  choice = menu ("Limpar o buffer de captura cheio?", ...
-                 "Cancelar", "Enviar CLEAR");
+  choice = text_menu ("Limpar o buffer de captura cheio?", ...
+                      "Cancelar", "Enviar CLEAR");
   if (choice == 2)
     safe_command (device, "CLEAR");
   endif
+endfunction
+
+function choice = text_menu (title_text, varargin)
+  % Present every console decision in the terminal. Keeping this logic in one
+  % helper gives port selection, experiment setup, calibration, and destructive
+  % confirmations the same numbering and input validation behavior.
+  option_count = numel (varargin);
+  if (option_count == 0)
+    error ("O menu textual precisa de pelo menos uma opcao");
+  endif
+
+  while (true)
+    % Display block: leave visual separation from preceding protocol output and
+    % place one option per line so long labels remain readable.
+    fprintf ("\n%s\n\n", title_text);
+    for index = 1:option_count
+      fprintf ("  %d - %s\n", index, varargin{index});
+    endfor
+
+    % Input block: accept only a complete integer in the displayed range.
+    entered = strtrim (input ("Opcao: ", "s"));
+    choice = str2double (entered);
+    if (isscalar (choice) && isfinite (choice) && ...
+        choice == fix (choice) && choice >= 1 && choice <= option_count)
+      return;
+    endif
+    fprintf (2, "Opcao invalida. Digite um numero entre 1 e %d.\n", ...
+             option_count);
+  endwhile
 endfunction
 
 function require_status (response)

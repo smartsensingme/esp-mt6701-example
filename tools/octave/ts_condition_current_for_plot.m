@@ -1,7 +1,8 @@
 function [conditioned, fault_mask] = ts_condition_current_for_plot (current, ...
                                                                     raw, ...
-                                                                    saturation_count)
-  if (nargin < 1 || nargin > 3)
+                                                                    saturation_count, ...
+                                                                    status)
+  if (nargin < 1 || nargin > 4)
     print_usage ();
   endif
   if (nargin < 2)
@@ -10,19 +11,25 @@ function [conditioned, fault_mask] = ts_condition_current_for_plot (current, ...
   if (nargin < 3)
     saturation_count = 0;
   endif
+  if (nargin < 4 || isempty (status))
+    status = empty_status (numel (current));
+  endif
 
   current = current(:).';
-  fault_mask = ! isfinite (current);
+  nonobservable_mask = status.nonobservable;
+  fault_mask = status.fault | (! isfinite (current) & ! nonobservable_mask);
   if (saturation_count > 0 && ! isempty (raw))
     raw = int16 (raw(:).');
     if (numel (raw) != numel (current))
       error ("Raw current and scaled current have different lengths");
     endif
-    fault_mask |= raw == int16 (32767) | raw == int16 (-32767);
+    fault_mask |= (raw == int16 (32767) | raw == int16 (-32767)) ...
+                  & ! status.tagged;
   endif
 
   conditioned = current;
-  valid_mask = ! fault_mask & isfinite (current);
+  conditioned(status.tagged) = NaN;
+  valid_mask = ! fault_mask & ! nonobservable_mask & isfinite (conditioned);
   for index = find (fault_mask)
     previous = find (valid_mask(1:max(index - 1, 0)), 1, "last");
     next_start = min (index + 1, numel (current));
@@ -44,4 +51,13 @@ function [conditioned, fault_mask] = ts_condition_current_for_plot (current, ...
       conditioned(index) = 0;
     endif
   endfor
+endfunction
+
+function status = empty_status (count)
+  empty = false (1, count);
+  status = struct ("brake", empty, "coast", empty, ...
+                   "fault_r", empty, "fault_l", empty, ...
+                   "fault_both", empty, "unavailable", empty, ...
+                   "fault", empty, "nonobservable", empty, ...
+                   "tagged", empty, "valid", ! empty);
 endfunction

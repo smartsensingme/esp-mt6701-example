@@ -21,18 +21,18 @@ relatório no console.
 
 O firmware trabalha com duas frequências:
 
-- **4 kHz / 250 µs:** aquisição do ângulo e atualização do estimador de Kalman;
+- **3 kHz / 333,333 µs:** aquisição do ângulo e atualização do estimador de Kalman;
 - **1 kHz / 1 ms:** cálculo e aplicação da ação de controle.
 
-Um GPTimer dispara a cada 250 µs. Sua interrupção não lê o sensor, não executa o
+Um GPTimer dispara a cada 333,333 µs. Sua interrupção não lê o sensor, não executa o
 Kalman e não controla o motor. Ela apenas notifica a tarefa de tempo real.
 
 ```mermaid
 flowchart LR
-    T[GPTimer\n250 us] -->|notificação| RT[Tarefa motor_realtime\nCore 1]
+    T[GPTimer 1 MHz\n333/333/334 ticks] -->|notificação| RT[Tarefa motor_realtime\nCore 1]
     RT --> I2C[MT6701 por I2C\n1 MHz]
     I2C --> K[Kalman\nângulo, velocidade, aceleração]
-    K --> D{quarta amostra?}
+    K --> D{terceira amostra?}
     D -->|sim| C[Controlador\n1 kHz]
     C --> M[MCPWM / BTS7960\nmotor]
     M --> RIS[R_IS condicionado]
@@ -41,7 +41,7 @@ flowchart LR
     RT --> INS[Instrumentação\ntempos e contadores]
     INS -->|snapshot a cada 5 s| Q[Fila de tamanho 1]
     ADCT -->|acumulador no snapshot| Q
-    Q --> LOG[telemetry_logger\nCore 0]
+    Q --> LOG[rt_diag_reporter\nCore 0]
 ```
 
 O Core 1 é reservado para aquisição, estimação e controle. O Core 0 executa a
@@ -66,7 +66,7 @@ criadas, `app_main()` pode retornar normalmente.
 Este arquivo contém três blocos do caminho crítico:
 
 1. **Agendamento:** GPTimer, ISR e notificação da tarefa;
-2. **Aquisição/estimação:** MT6701 e Kalman a 4 kHz;
+2. **Aquisição/estimação:** MT6701 e Kalman a 3 kHz;
 3. **Controle:** chamada ao controlador e escrita do PWM a 1 kHz;
 Ele alimenta o componente `esp_rt_diagnostics` e chama a API de telemetria
 somente para publicar um snapshot quando a janela termina. A fila, a tarefa de
@@ -77,7 +77,8 @@ arquivo.
 
 Mantém `esp_rt_diag_t`, um acumulador estático com proprietário único. Sua API
 inline registra ciclos, eventos perdidos, deadlines, eventos definidos pela
-aplicação, duração máxima de etapas e intervalos mínimo/máximo. O componente não
+aplicação, duração média/máxima de etapas, violações de orçamento e intervalos
+mínimo/máximo. O componente não
 conhece MT6701, I2C, Kalman, PID ou motor e não cria fila, tarefa ou logger.
 
 `CONFIG_ESP_RT_DIAGNOSTICS_ENABLE=n` transforma as chamadas do caminho crítico
@@ -112,6 +113,13 @@ uma captura cheia. O cabeçalho descreve dimensões, taxa, canais, unidades,
 escala, offset, valor inválido e CRC-32/IEEE. O payload permanece intercalado
 por amostra, em `int16_t` little-endian, sem cópia intermediária.
 
+Comandos que não pertencem ao protocolo básico podem ser encaminhados a um
+callback registrado pela aplicação. O transporte fornece temporariamente ao
+callback operações para entrada/saída binária, respostas formatadas, erros e
+status, mas não conhece o subsistema atendido pela extensão. Nesta aplicação,
+`main/angle_lut_usb_commands.c` implementa a família `CAL ...`; assim, a
+dependência de `esp_angle_lut` permanece em `main` e não no componente USB.
+
 O transporte ocupa exclusivamente a porta USB nativa. Console e telemetria
 continuam na UART0, acessível pela porta USB de gravação da placa, portanto não
 há texto de log misturado ao payload. Uma falha ou desconexão durante `DUMP` não
@@ -129,41 +137,59 @@ Ao publicar telemetria, o Core 1 entra numa seção crítica curta somente para
 copiar e reiniciar o acumulador. A calibração ADC e os cálculos em volts/ampères
 ocorrem depois, no logger do Core 0.
 
-### `main/realtime_telemetry.c` — transporte e apresentação
+### `esp_rt_diagnostics_reporter` e `main/realtime_telemetry.c`
 
-Implementa tudo que não precisa pertencer ao caminho de controle:
+O componente reutilizável implementa o transporte e a apresentação genérica:
 
-- cria e destrói a fila e a tarefa de logger;
-- recebe cópias de `realtime_telemetry_snapshot_t`;
+- cria e destrói a fila overwrite e a tarefa de reporter;
+- recebe cópias de `esp_rt_diag_snapshot_t` e de um payload opaco;
 - substitui snapshots antigos sem bloquear o Core 1;
 - calcula as taxas efetivas da janela;
 - classifica as janelas silenciosas e afetadas pelo próprio relatório;
-- formata e imprime todos os logs no Core 0.
+- formata os diagnósticos genéricos no Core 0.
 
-`realtime_telemetry.h` define o contrato entre os módulos. A telemetria recebe
-valores prontos e nunca conhece os objetos vivos do sensor, Kalman ou motor.
+`realtime_telemetry.h` define somente o payload da aplicação. Seu callback
+formata motor, corrente e gravador; ele recebe valores copiados e nunca conhece
+os objetos vivos do sensor, Kalman ou motor. A escolha
+`CONFIG_APP_RT_DIAGNOSTICS_APPLICATION_REPORT_*` seleciona apresentação ausente,
+compacta ou completa. O ensaio temporal usa a opção compacta: uma linha curta
+identifica modo, fase, referência, velocidade, saída e estado da captura. O
+reporter também usa `ESP_RT_DIAG_REPORT_COMPACT`, reduzindo o diagnóstico
+genérico a uma linha por janela.
 
-### `main/motor_controller.c` — lei de controle
+### `components/esp_pid` e `main/motor_controller.c` — lei de controle
 
-Implementa o PID de velocidade executado a 1 kHz:
+O componente `esp_pid` implementa o algoritmo reutilizável. Cada `esp_pid_t`
+contém sua própria configuração e estado, sem variáveis globais nem alocação
+dinâmica. `motor_controller.c` mantém apenas o perfil experimental e chama o
+PID de velocidade a 1 kHz:
 
 ```c
 float motor_controller_update(motor_controller_t *controller,
                               float measured_speed_rpm, float dt)
 ```
 
-A referência alterna automaticamente entre 600 e 900 RPM a cada 20 segundos.
-A velocidade estimada pelo Kalman fecha a malha. A função calcula os termos P,
-I e D usando o `dt` real, limita a saída entre 0% e 98% e emprega anti-windup
-condicional.
+A referência alterna automaticamente entre 600 e 900 RPM. O período padrão é
+2 segundos e pode ser alterado temporariamente pelo Octave antes de `ARM`.
+A velocidade estimada pelo Kalman fecha a malha. O componente calcula os termos
+P, I e D usando o `dt` real, limita a saída entre -100% e 100% e emprega
+anti-windup por back-calculation.
 
-Os ganhos são variáveis estáticas no início de `motor_controller.c`, para
-facilitar a sintonia manual:
+Os ganhos fazem parte da estrutura de configuração no início de
+`motor_controller.c`, para facilitar a sintonia manual:
 
 ```c
-static float pid_kp = 0.05f;
-static float pid_ki = 0.02f;
-static float pid_kd = 0.00f;
+static const esp_pid_config_t speed_pid_config = {
+    .kp = 0.25f,
+    .ki = 3.0f,
+    .kd = 0.0001f,
+    .output_min = -100.0f,
+    .output_max = 100.0f,
+    .derivative_filter_tau_s = 0.020f,
+    .anti_windup_tracking_time_s = 0.20f,
+    .maximum_dt_s = 0.1f,
+    .derivative_source = ESP_PID_DERIVATIVE_ON_MEASUREMENT,
+};
 ```
 
 A derivada é calculada sobre a velocidade medida, com filtro passa-baixas de
@@ -185,8 +211,9 @@ normalizada em `[-180°, 180°]`, evitando um salto falso de aproximadamente
 
 ### `components/esp-mt6701` — driver do sensor
 
-`mt6701_update()` realiza uma leitura I2C em burst dos registradores `0x03` e
-`0x04`, reconstrói os 14 bits e atualiza o estado interno do driver:
+A aplicação chama `mt6701_update()`, que executa de forma síncrona a leitura I2C
+em burst dos registradores `0x03` e `0x04`, registra o instante de conclusão e
+atualiza:
 
 - ângulo calibrado mais recente;
 - direção e offset aplicados em software;
@@ -197,8 +224,8 @@ Nesta aplicação, a velocidade usada no controle e na telemetria é a estimada
 pelo Kalman, não `velocity_rad_s` do driver. O contador de voltas do driver é
 usado somente na telemetria.
 
-`mt6701_get_last_angle_degrees()` converte a amostra já armazenada por
-`mt6701_update()`. Ela não inicia uma segunda transação I2C.
+`mt6701_get_last_angle_counts()` e `mt6701_get_last_angle_degrees()` acessam a
+amostra armazenada. Nenhuma delas inicia uma segunda transação I2C.
 
 ### `components/esp-engine-driver` — acionamento da ponte H
 
@@ -217,8 +244,8 @@ de tempo real é criada.
 
 A função:
 
-1. chama `realtime_telemetry_start()`, que cria a fila de um snapshot e
-   `telemetry_logger` no Core 0;
+1. chama `realtime_telemetry_start()`, que instancia o reporter, sua fila de um
+   snapshot e `rt_diag_reporter` no Core 0;
 2. cria `motor_realtime` no Core 1, com prioridade máxima da aplicação.
 
 A fila usa `xQueueOverwrite()`. Se o logger ainda não consumiu o snapshot
@@ -231,10 +258,10 @@ O próprio Core 1 cria os recursos usados no caminho crítico:
 
 1. estado do controlador PID e perfil de referência;
 2. barramento mestre I2C;
-3. dispositivo MT6701 no endereço `0x06` e clock configurado;
-4. estado inicial do sensor e primeira amostra;
+3. dispositivo MT6701 no endereço `0x06`;
+4. primeira amostra e estado inicial do sensor;
 5. filtro de Kalman inicializado com o ângulo atual;
-6. GPTimer periódico de 250 µs.
+6. GPTimer de 1 MHz com alarmes absolutos no padrão 333/333/334 µs.
 
 Criar I2C e GPTimer dentro da tarefa fixada ajuda a manter as interrupções dos
 periféricos associadas ao mesmo núcleo do loop.
@@ -249,36 +276,45 @@ driver e podem ser configurados antes de iniciar o timer.
 O Kalman começa no primeiro ângulo válido do sensor, evitando uma grande
 inovação artificial no primeiro ciclo. A configuração atual é:
 
-| Parâmetro | Valor de referência | Escala para 4 kHz | Valor aplicado |
+| Parâmetro | Valor de referência | Escala para 3 kHz | Valor aplicado |
 |---|---:|---:|---:|
-| `Q_theta` | 0,001 | 0,25 | 0,00025 |
-| `Q_omega` | 10 | 0,25 | 2,5 |
-| `Q_alpha` | 100 | 0,25 | 25 |
+| `Q_theta` | 0,001 | 0,333333 | 0,000333333 |
+| `Q_omega` | 5 | 0,333333 | 1,66667 |
+| `Q_alpha` | 100 | 0,333333 | 33,3333 |
 | `R` | 0,002 | não se aplica | 0,002 |
 
 A escala é `KALMAN_REFERENCE_RATE_HZ / REALTIME_SENSOR_RATE_HZ`, isto é,
-`1000 / 4000`. Esses números são parâmetros de sintonia do modelo, não
+`1000 / 3000`. Esses números são parâmetros de sintonia do modelo, não
 características obrigatórias do MT6701.
 
 Se sensor ou timer falharem durante a inicialização, a saída do motor é levada
 a zero e a tarefa é encerrada.
 
-## 4. Agendamento a 4 kHz
+## 4. Agendamento a 3 kHz
 
 ### `sampling_timer_callback()` — interrupção mínima
 
-A ISR faz somente três coisas:
+A ISR faz somente quatro coisas:
 
 1. registra o instante da interrupção em `last_timer_isr_time_us`;
-2. incrementa a notificação direta da tarefa com
+2. rearma o próximo alarme absoluto no padrão 333/333/334 µs;
+3. incrementa a notificação direta da tarefa com
    `vTaskNotifyGiveFromISR()`;
-3. solicita uma troca de contexto caso a tarefa despertada tenha prioridade.
+4. solicita uma troca de contexto caso a tarefa despertada tenha prioridade.
 
 I2C, ponto flutuante, filtro e MCPWM ficam fora da ISR.
 
-O GPTimer possui resolução de 1 MHz, portanto cada tick vale 1 µs. O alarme é
-configurado com 250 ticks, recarga automática e contagem crescente, produzindo
-exatamente os 4 kHz nominais.
+O GPTimer possui resolução exata de 1 MHz. O primeiro alarme ocorre em 333 ticks
+e a ISR agenda os próximos alarmes absolutos com intervalos de 333, 334 e 333
+ticks. Assim, cada grupo de três intervalos totaliza exatamente 1000 µs,
+produzindo média exata de 3 kHz e preservando o controle a 1 kHz. Como o próximo
+alarme é calculado a partir do valor absoluto do alarme anterior, a latência da
+ISR não se acumula como deriva de fase.
+
+O padrão fracionário também evita solicitar ao periférico um clock de 3 MHz que
+o divisor de hardware não consegue representar exatamente. Na placa testada,
+essa solicitação era arredondada para 3,076923 MHz e fazia o PID executar a
+aproximadamente 1025,6 Hz.
 
 ### Espera na tarefa
 
@@ -295,13 +331,14 @@ uma execução individual. As notificações foram acumuladas pelo FreeRTOS, mas
 firmware processa somente uma nova leitura ao despertar; ele não tenta executar
 várias leituras atrasadas em sequência.
 
-## 5. Caminho de aquisição e estimação — 4 kHz
+## 5. Caminho de aquisição e estimação — 3 kHz
 
 Em cada despertar, a ordem é:
 
 1. medir a latência entre a ISR e o início efetivo da tarefa;
-2. chamar `mt6701_update()`;
-3. medir a duração da chamada I2C completa;
+2. chamar `mt6701_update()` e aguardar a leitura I2C síncrona de dois bytes;
+3. deixar o driver validar a contagem, atualizar seu cache e registrar o
+   instante de conclusão;
 4. se a leitura funcionou, calcular `sample_dt_us` usando o fim das leituras
    atual e anterior;
 5. obter o ângulo calibrado armazenado no driver;
@@ -309,9 +346,10 @@ Em cada despertar, a ordem é:
 7. atualizar o Kalman;
 8. incrementar os contadores do estimador.
 
-O instante usado no `dt` é o final da transação I2C. Isso aproxima o timestamp
-do momento em que a amostra ficou disponível, em vez de assumir rigidamente
-250 µs.
+O driver marca o final da transação com `esp_timer_get_time()`. Esse instante é
+usado no `dt`; como a chamada é síncrona, a tarefa aguarda os pulsos do
+barramento antes de atualizar o Kalman. Em caso de NACK ou timeout, a chamada
+retorna o erro e a aplicação tenta novamente no período seguinte.
 
 Se o I2C falhar:
 
@@ -324,15 +362,19 @@ claramente inválidos após uma pausa excepcional.
 
 ## 6. Caminho de controle — 1 kHz
 
-`CONTROL_DIVIDER` é calculado como `4000 / 1000 = 4`. A variável
-`control_divider` é incrementada em cada despertar de 4 kHz. A cada quarta
+`CONTROL_DIVIDER` é calculado como `3000 / 1000 = 3`. A variável
+`control_divider` é incrementada em cada despertar de 3 kHz. A cada terceira
 amostra:
 
 1. mede-se o `dt` real desde a chamada anterior do controlador;
-2. converte-se `x[1]` do Kalman de graus/s para RPM dividindo por 6;
+2. converte-se `x[1]` do estado atual do Kalman de graus/s para RPM dividindo
+   por 6;
 3. chama-se `motor_controller_update()`;
 4. aplica-se o resultado com `engine_driver_set_speed()`;
 5. incrementam-se os contadores de controle.
+
+Não há projeção da medição para um instante futuro. O PID e a telemetria usam
+diretamente o estado obtido após a leitura síncrona e a atualização do Kalman.
 
 O caminho fechado é:
 
@@ -356,7 +398,8 @@ necessário medir overshoot e tempo de acomodação com precisão.
 
 A instrumentação é chamada dentro de `motor_realtime` porque somente ali é
 possível medir o caminho crítico. Ela usa `esp_timer_get_time()` e acumula os
-resultados em um `esp_rt_diag_t` durante a janela configurada por
+resultados em um `esp_rt_diag_t` durante a janela `window_duration_us` da
+instância. O valor zero seleciona o padrão
 `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`.
 
 ### Medidas de tempo
@@ -364,13 +407,16 @@ resultados em um `esp_rt_diag_t` durante a janela configurada por
 | Campo | Início | Fim | O que revela |
 |---|---|---|---|
 | `wake` | timestamp gravado pela ISR | tarefa acordada | latência ISR → tarefa |
-| `i2c` | antes de `mt6701_update()` | retorno da função | transação e overhead do driver |
+| `i2c` | antes de `mt6701_update()` | após seu retorno | transação I2C síncrona completa e overhead do driver |
 | `kalman` | antes de ler o cache/atualizar filtro | fim da atualização | custo da estimação |
 | `control` | início do bloco de 1 kHz | após escrever o motor | custo do controlador + MCPWM |
 | `processing` | antes do I2C | fim do ciclo | I2C + Kalman + controle quando aplicável |
 | `cycle` | interrupção | fim do ciclo | `wake + processing` |
 
-Todos os campos da linha `window max` são **máximos observados**, não médias.
+Cada etapa possui média, máximo e um contador de chamadas acima do orçamento
+configurado. Para este projeto os limites de investigação são 250 us para a leitura I2C,
+25 us para Kalman e 150 us para controle e publicação do snapshot. Eles são
+limites de diagnóstico, não alteram nem interrompem o algoritmo.
 
 ### Intervalos e contadores
 
@@ -382,7 +428,7 @@ Todos os campos da linha `window max` são **máximos observados**, não médias
 | `control_updates` | execuções do controlador na janela |
 | `missed_timer_events` | períodos excedentes acumulados ao despertar |
 | `sensor_errors` | falhas retornadas pelo caminho I2C/MT6701 |
-| `deadline_overruns` | ciclos cujo `cycle` excedeu 250 µs |
+| `deadline_overruns` | ciclos cujo `cycle` excedeu 334 µs |
 
 A latência `wake` só é acumulada quando a tarefa recebe exatamente uma
 notificação. Se houver mais de uma, o timestamp compartilhado corresponde à
@@ -399,21 +445,23 @@ reiniciados a cada janela e descrevem melhor o comportamento recente.
 A telemetria não participa do controle. Ao final de cada janela,
 `publish_telemetry_snapshot()` em `realtime_loop.c`:
 
-1. extrai `esp_rt_diag_snapshot_t`, reiniciando a janela do componente;
+1. extrai `esp_rt_diag_snapshot_t` com um `window_id` monotônico, reiniciando a
+   janela do componente;
 2. consulta o contador total de voltas e o estado instantâneo do PID;
-3. combina o diagnóstico genérico e o payload desta aplicação em
-   `realtime_telemetry_snapshot_t`;
-4. chama `realtime_telemetry_publish()`;
+3. monta um `realtime_telemetry_payload_t` separado do diagnóstico;
+4. chama `realtime_telemetry_publish()` com as duas estruturas;
 5. registra o custo da publicação como a etapa `SNAPSHOT` da janela seguinte.
 
-O módulo `realtime_telemetry.c` faz o `xQueueOverwrite()` e seu logger no Core 0
-formata e imprime os dados. Não existe `ESP_LOGI()` dentro do ciclo periódico do
+O `esp_rt_diagnostics_reporter` faz o `xQueueOverwrite()` e seu logger no Core 0
+imprime o diagnóstico genérico antes de chamar a apresentação específica em
+`realtime_telemetry.c`. Não existe `ESP_LOGI()` dentro do ciclo periódico do
 Core 1 depois que o timer começa.
 
 ### Por que um relatório aparece a cada 10 segundos?
 
 Os snapshots continuam sendo produzidos a cada 5 segundos. Porém, imprimir no
-console pode interferir em recursos compartilhados do SoC. O logger alterna:
+console pode interferir em recursos compartilhados do SoC. O reporter usa o
+`window_id` para alternar:
 
 1. imprime uma janela que permaneceu sem logs, marcada como `quiet`;
 2. guarda sem imprimir a janela seguinte, que pode ter sido perturbada pela
@@ -438,13 +486,15 @@ janela. Valores de falha escritos como `janela/total` separam o ocorrido nos
 ### Resumo da janela
 
 ```text
-snapshot[quiet]: duration=5.000 s rate=4000.0/1000.0 Hz
-cycles=20000 total_cycles=40000 wake_valid=20000
+snapshot[quiet]: duration=5.000 s rate=3000.0/3003.0 Hz
+cycles=15000 total_cycles=30000 wake_valid=15000
 ```
 
 - `duration`: duração realmente medida, usada para calcular as taxas;
-- primeiro `rate`: atualizações válidas do estimador por segundo;
-- segundo `rate`: ações de controle por segundo;
+- primeiro `rate`: ciclos rápidos realmente processados por segundo;
+- segundo `rate`: taxa esperada calculada pelo diagnóstico a partir do período
+  inteiro de 333 µs; por isso aparece como 3003 Hz, embora o GPTimer gere
+  exatamente 3000 Hz;
 - `cycles`: ciclos processados;
 - `total_cycles`: ciclos processados desde o início;
 - `wake_valid`: ciclos nos quais havia exatamente uma notificação pendente e,
@@ -458,14 +508,14 @@ events[quiet]: missed=0/7 errors=0/0 overruns=0/3 (window/total)
 
 - `missed`: períodos de timer não processados individualmente;
 - `errors`: erros do sensor/I2C;
-- `overruns`: ciclos acima do deadline de 250 µs.
+- `overruns`: ciclos acima do deadline inteiro de 334 µs;
 - o primeiro número é da janela identificada e o segundo é o total acumulado.
 
 ### Máximos temporais
 
 ```text
-timing[quiet]: max wake=7 i2c=135 kalman=3 control=7 processing=151
-cycle=158 us lifetime_processing=449 us previous_snapshot=21 us
+timing[quiet]: max wake=7 i2c=204 kalman=3 control=7 processing=220
+cycle=227 us lifetime_processing=449 us previous_snapshot=21 us
 ```
 
 - `wake`, `i2c`, `kalman`, `control`, `processing` e `cycle`: definições da
@@ -496,14 +546,14 @@ pid=7.35/42.10/0.00% output=49.5%
 ### Jitter
 
 ```text
-interval[quiet]: sample=236..266 us control=1000..1000 us
+interval[quiet]: sample=318..349 us control=990..1010 us
 ```
 
 Os intervalos mostram mínimo e máximo da janela identificada. Como nenhuma
 janela é descartada, um aumento nos totais pode ser localizado no relatório
 `log-affected` ou `quiet` correspondente.
 
-### Tensão `R_IS` e corrente equivalente
+### Tensões `R_IS`/`L_IS` e corrente equivalente
 
 ```text
 current[quiet]: R_IS=1.232/0.011/3.410 V ADC=112/1/310 mV
@@ -528,6 +578,14 @@ filtra o PWM. Assim, abaixo de 100% de duty, `current_equiv` é uma corrente
 equivalente ponderada pelo PWM; em 100% ela estima diretamente a corrente do
 motor. A tolerância de `k_ILIS` exige calibração contra um amperímetro.
 
+Na captura, a aplicação cruza as duas magnitudes calibradas com o estado
+efetivamente aplicado pelo driver. `DRIVE` positivo seleciona `R_IS`; `DRIVE`
+negativo seleciona `L_IS` e troca seu sinal. `BRAKE` e `COAST` são marcados como
+não observáveis porque o sense de high-side não representa com segurança a
+corrente de armadura nesses modos. Falha em `R_IS`, em `L_IS` ou simultânea usa
+códigos reservados dentro do próprio `int16_t` da corrente. Não existe um sexto
+canal e a capacidade permanece em 13.107 amostras com 128 KiB.
+
 ## 10. Estruturas internas
 
 ### `realtime_loop_context_t`
@@ -547,28 +605,29 @@ proprietário, não contém a lei de controle e não é lido diretamente pelo lo
 É a cópia imutável da janela produzida pelo componente. Contém somente saúde
 temporal e contadores genéricos; não contém grandezas específicas do PID.
 
-### `realtime_telemetry_snapshot_t`
+### `realtime_telemetry_payload_t`
 
-É definido em `realtime_telemetry.h` e funciona como objeto de transferência
-entre os núcleos. Combina um `esp_rt_diag_snapshot_t` com o payload instantâneo
-desta aplicação. O logger nunca recebe ponteiros para o estado vivo do Kalman ou
-do sensor.
+É definido em `realtime_telemetry.h` e contém somente o payload instantâneo
+desta aplicação. O reporter o copia ao lado de `esp_rt_diag_snapshot_t`; o
+callback nunca recebe ponteiros para o estado vivo do Kalman ou do sensor.
 
 ### `motor_controller_t`
 
-É o estado privado da lei de controle. Guarda referência atual, erro,
-contribuição integral, derivada filtrada da velocidade, amostra anterior,
-temporização do perfil, termos P/D, saída e flags de inicialização.
+É o estado privado do ensaio. Guarda uma instância `esp_pid_t`, a referência,
+a temporização do perfil, a saída e as flags do modo experimental. O estado
+matemático do PID permanece encapsulado em `esp_pid_t`.
 
 ## 11. Constantes importantes
 
 | Constante | Valor atual | Função |
 |---|---:|---|
-| `REALTIME_SENSOR_RATE_HZ` | 4000 Hz | frequência de aquisição e Kalman |
+| `REALTIME_SENSOR_RATE_HZ` | 3000 Hz | frequência de aquisição e Kalman |
 | `REALTIME_CONTROL_RATE_HZ` | 1000 Hz | frequência do controlador |
-| `SENSOR_PERIOD_US` | 250 µs | período e deadline do ciclo rápido |
+| `SENSOR_SHORT_PERIOD_TICKS` | 333 ticks a 1 MHz | intervalo curto do agendamento fracionário |
+| `SENSOR_LONG_PERIOD_TICKS` | 334 ticks a 1 MHz | intervalo longo que fecha exatamente 1 ms a cada três amostras |
+| `SENSOR_DEADLINE_US` | 334 µs | deadline inteiro do ciclo rápido |
 | `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` | 5000 ms | duração de cada janela |
-| `CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ` | 25 kHz | aquisição ADC contínua de `R_IS` |
+| `CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ` | 25 kHz/canal | aquisição ADC contínua de `R_IS` e `L_IS` |
 | `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB` | 128 KiB | buffer contínuo interno de séries temporais |
 | `REALTIME_TASK_PRIORITY` | máxima - 1 | prioridade do caminho crítico |
 | `TELEMETRY_TASK_PRIORITY` | 1 | prioridade da apresentação de dados |
@@ -586,8 +645,8 @@ O clock I2C não é uma constante fixa no arquivo. Ele vem de
 | ADC1/DMA de `R_IS` | `r_is_adc`, Core 0 | produtor contínuo; Core 1 só extrai snapshot |
 | buffer de séries temporais | escritor Core 1 / futuro leitor Core 0 | leitura apenas em `FULL`; liberação explícita |
 | `esp_rt_diag_t` | `motor_realtime`, Core 1 | acumulador single-writer, nunca compartilhado |
-| fila de telemetria | produtor Core 1 / consumidor Core 0 | capacidade 1, overwrite |
-| console | `telemetry_logger`, Core 0 | fora do caminho crítico |
+| fila do reporter | produtor Core 1 / consumidor Core 0 | capacidade 1, overwrite |
+| console | `rt_diag_reporter`, Core 0 | fora do caminho crítico |
 
 Os mutexes dos drivers estão desabilitados em `sdkconfig.defaults` porque há um
 único proprietário para sensor e motor durante a operação periódica. Essa
@@ -613,13 +672,13 @@ esses recursos.
 
 `sdkconfig.defaults` fixa CPU em 240 MHz, otimização de desempenho, afinidade de
 serviços no Core 0 e suporte do GPTimer em memória interna. O tick do FreeRTOS
-continua em 1 kHz; quem produz os 4 kHz é o GPTimer.
+continua em 1 kHz; quem produz os 3 kHz é o GPTimer.
 
 ### Diagnóstico de desenvolvimento
 
 - `CONFIG_ESP_RT_DIAGNOSTICS_ENABLE`: inclui ou remove a instrumentação;
 - `CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING`: habilita etapas e intervalos;
-- `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`: duração de cada janela.
+- `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`: duração padrão; cada instância pode sobrescrevê-la.
 
 ### Séries temporais
 
@@ -647,6 +706,7 @@ automático, desde que o gravador esteja `EMPTY` e a taxa divida 1 kHz exatament
 
 - `CONFIG_ENGINE_CURRENT_SENSE_ENABLE`: inclui ADC/DMA e o relatório;
 - `CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`: entrada ADC1 protegida, padrão GPIO4;
+- `CONFIG_ENGINE_CURRENT_SENSE_GPIO_L_IS`: entrada ADC1 protegida, padrão GPIO5;
 - `CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`: padrão 25 kS/s;
 - resistores da placa, série e pulldown: padrões 10 kΩ, 10 kΩ e 1 kΩ;
 - `CONFIG_ENGINE_CURRENT_SENSE_RATIO`: `k_ILIS` nominal, padrão 8500.
@@ -658,15 +718,15 @@ O esquema de condicionamento e suas limitações estão documentados em
 
 | Objetivo | Local principal |
 |---|---|
-| Ajustar `Kp`, `Ki` e `Kd` | variáveis estáticas no início de `main/motor_controller.c` |
+| Ajustar `Kp`, `Ki`, `Kd`, saturação, filtro e anti-windup | `speed_pid_config` em `main/motor_controller.c` |
 | Alterar níveis/período do degrau | variáveis `reference_*` em `main/motor_controller.c` |
 | Alterar frequência de aquisição/controle | `main/realtime_loop.h` |
 | Ajustar covariâncias do Kalman | `initialize_sensor_and_filter()` |
-| Alterar período dos snapshots | `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` |
+| Alterar período dos snapshots | `window_duration_us` da instância ou o padrão `CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS` |
 | Mudar campos dos logs | `realtime_telemetry.h` e `realtime_telemetry.c` |
 | Adicionar etapa/evento/intervalo desta aplicação | enums em `realtime_telemetry.h` e chamadas `esp_rt_diag_*` |
 | Alterar buffer/API de séries temporais | `components/esp_timeseries_recorder` |
-| Alterar aquisição/proteção de `R_IS` | `components/esp-engine-driver` |
+| Alterar aquisição/proteção de `R_IS` e `L_IS` | `components/esp-engine-driver` |
 | Alterar pinos/clock | `idf.py menuconfig` |
 
 Ao implementar o PID, preserve a separação: o controlador deve calcular apenas

@@ -5,13 +5,14 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
   if (nargin < 3)
     enable_after = false;
   endif
+  ts_load_angle_lut_tools ();
   required = {"bin_count", "correction_counts", "payload_crc32"};
   for index = 1:numel (required)
     if (! isfield (calibration, required{index}))
       error ("Calibration is missing field %s", required{index});
     endif
   endfor
-  payload = ts_int16_le_bytes (calibration.correction_counts);
+  payload = esp_angle_lut_int16_le_bytes (calibration.correction_counts);
   if (isfield (calibration, "full_scale_counts"))
     full_scale_counts = calibration.full_scale_counts;
   elseif (isfield (calibration, "sensor_counts"))
@@ -40,21 +41,22 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
     if (full_scale_counts != firmware.full_scale_counts)
       error ("LUT full scale differs from the firmware configuration");
     endif
-    bin_width = full_scale_counts / calibration.bin_count;
-    next = corrections([2:end, 1]);
-    corrected_steps = bin_width + next - corrections;
-    maximum_correction = max (abs (corrections));
-    if (maximum_correction > firmware.max_abs_correction_counts)
+    [valid_lut, validation] = esp_angle_lut_validate ( ...
+        corrections, full_scale_counts, ...
+        firmware.max_abs_correction_counts);
+    if (! validation.correction_range)
       error ("LUT correction exceeds the firmware limit");
     endif
-    if (any (corrected_steps <= 0) || ...
-        any (corrected_steps > 4 * bin_width))
+    if (! valid_lut)
       error ("LUT is not monotonic according to the firmware rules");
     endif
     fprintf (["Preflight da LUT: correcao maxima %.0f/%d contagens, ", ...
               "passos corrigidos %.0f..%.0f/1..%.0f.\n"], ...
-             maximum_correction, firmware.max_abs_correction_counts, ...
-             min (corrected_steps), max (corrected_steps), 4 * bin_width);
+             validation.maximum_correction_counts, ...
+             firmware.max_abs_correction_counts, ...
+             validation.minimum_corrected_step_counts, ...
+             validation.maximum_corrected_step_counts, ...
+             4 * full_scale_counts / calibration.bin_count);
 
     command = sprintf ("CAL WRITE %d %d %08X", calibration.bin_count, ...
                        full_scale_counts, crc);

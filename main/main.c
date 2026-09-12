@@ -14,11 +14,23 @@ static struct engine_config motor = {
     .pin_rev = CONFIG_ENGINE_PIN_LPWM,
     .pin_enable = CONFIG_ENGINE_PIN_ENABLE,
     .pwm_freq_hz = CONFIG_ENGINE_PWM_FREQ_HZ,
+    .direction_dead_time_us = CONFIG_ENGINE_DIRECTION_DEAD_TIME_US,
 };
 
+/**
+ * @brief Initialize persistent services, the bridge, and application tasks.
+ *
+ * ESP-IDF calls this external entry point once from its main task. It
+ * initializes NVS for the angle LUT, initializes the static motor instance, and
+ * calls realtime_loop_start(). The function may return after successful task
+ * creation because all retained state has static or application lifetime.
+ */
 void app_main(void) {
-  ESP_LOGI(TAG, "MT6701: 4 kHz acquisition/Kalman, 1 kHz PID control loop");
+  /* Identification block: state the compiled acquisition/control topology. */
+  ESP_LOGI(TAG, "MT6701: 3 kHz acquisition/Kalman, 1 kHz PID control loop");
 
+  /* NVS block: recover the two ESP-IDF conditions that require partition erase
+   * before retrying. Other failures remain fatal through ESP_ERROR_CHECK. */
   esp_err_t nvs_error = nvs_flash_init();
   if (nvs_error == ESP_ERR_NVS_NO_FREE_PAGES ||
       nvs_error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -27,22 +39,18 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(nvs_error);
 
-  /* MCPWM must be ready before the real-time task is allowed to command it. */
+  /* Actuator block: MCPWM must exist before Core 1 may command the bridge. */
   ESP_LOGI(TAG, "Initializing H-Bridge motor driver...");
   if (engine_driver_init(&motor) != 0) {
     ESP_LOGE(TAG, "Failed to initialize H-Bridge motor driver");
     return;
   }
 
-  /*
-   * This creates the Core 0 logger and Core 1 real-time task. app_main() may
-   * return after success because both tasks and the motor state outlive it.
-   */
+  /* Runtime block: create the Core 0 reporter and Core 1 deterministic task. */
   esp_err_t err = realtime_loop_start(&motor);
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Could not start real-time loop: %s", esp_err_to_name(err));
-    /* Fail safe: never leave a nonzero command after partial startup failure.
-     */
+    /* Failure block: never retain drive after a partial runtime startup. */
     engine_driver_set_speed(&motor, 0.0f);
   }
 }

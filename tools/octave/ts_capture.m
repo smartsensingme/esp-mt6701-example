@@ -1,5 +1,6 @@
-function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
-  if (nargin < 1 || nargin > 4)
+function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ...
+                               additional_fields)
+  if (nargin < 1 || nargin > 5)
     print_usage ();
   endif
   if (nargin < 2)
@@ -10,6 +11,12 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
   endif
   if (nargin < 4)
     make_plot = true;
+  endif
+  if (nargin < 5)
+    additional_fields = struct ();
+  endif
+  if (! isstruct (additional_fields) || numel (additional_fields) != 1)
+    error ("additional_fields must be an empty or scalar structure");
   endif
 
   owns_device = ischar (endpoint);
@@ -46,7 +53,8 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
 
     channels = repmat (struct ("name", "", "unit", "", "scale", 0, ...
                                "offset", 0, "saturation_count", 0, ...
-                               "invalid_count", 0), channel_count, 1);
+                               "invalid_count", 0, "encoding", "linear"), ...
+                       channel_count, 1);
     scales = zeros (channel_count, 1);
     offsets = zeros (channel_count, 1);
     for channel = 0:(channel_count - 1)
@@ -63,12 +71,23 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
           metadata, [prefix, "saturation_count"]);
       channels(channel + 1).invalid_count = required_number ( ...
           metadata, [prefix, "invalid_count"]);
+      channels(channel + 1).encoding = optional_value ( ...
+          metadata, [prefix, "encoding"], "linear");
       scales(channel + 1) = channels(channel + 1).scale;
       offsets(channel + 1) = channels(channel + 1).offset;
     endfor
 
     [raw, values] = ts_decode_payload (payload, channel_count, sample_count, ...
                                        invalid_i16, scales, offsets);
+    current_status = [];
+    tagged_current = find (strcmp ({channels.encoding}, ...
+                                   "bts7960-current-v1"));
+    if (numel (tagged_current) > 1)
+      error ("Capture contains more than one tagged BTS7960 current channel");
+    elseif (! isempty (tagged_current))
+      current_status = ts_decode_current_status (raw(tagged_current, :));
+      values(tagged_current, current_status.tagged) = NaN;
+    endif
     capture = struct ();
     capture.protocol = "TSRECORDER/1";
     capture.capture_id = required_number (metadata, "capture_id");
@@ -80,10 +99,22 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot)
     capture.channels = channels;
     capture.raw = raw;
     capture.values = values;
+    if (! isempty (current_status))
+      capture.current_status = current_status;
+    endif
     capture.payload_crc32 = actual_crc;
     capture.header_lines = header_lines;
     capture.usb_transfer_seconds = transfer_seconds;
     capture.usb_transfer_kib_s = payload_bytes / 1024 / transfer_seconds;
+
+    extra_names = fieldnames (additional_fields);
+    for extra_index = 1:numel (extra_names)
+      extra_name = extra_names{extra_index};
+      if (isfield (capture, extra_name))
+        error ("Additional capture field conflicts with '%s'", extra_name);
+      endif
+      capture.(extra_name) = additional_fields.(extra_name);
+    endfor
 
     fprintf ("Capture %d: %d samples, %d channels, %.3f s, CRC %08X OK\n", ...
              capture.capture_id, sample_count, channel_count, ...
@@ -148,6 +179,14 @@ function value = required_value (metadata, key)
     error ("Required header key missing: %s", key);
   endif
   value = metadata(key);
+endfunction
+
+function value = optional_value (metadata, key, default_value)
+  if (isKey (metadata, key))
+    value = metadata(key);
+  else
+    value = default_value;
+  endif
 endfunction
 
 function value = required_number (metadata, key)

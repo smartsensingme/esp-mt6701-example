@@ -1,4 +1,5 @@
 addpath (fileparts (mfilename ("fullpath")));
+ts_load_angle_lut_tools ();
 
 known = ts_crc32_ieee (uint8 ("123456789"));
 assert (known == uint32 (hex2dec ("CBF43926")));
@@ -28,6 +29,29 @@ assert (isequal (conditioned, [1, 2, 3]));
 assert (isequal (faults, logical ([0, 1, 0])));
 assert (isequal (conditioned, [1, 3, 5]));
 
+[conditioned, faults] = ts_condition_current_for_plot ([-1, NaN, -3], ...
+                                                        int16 ([-1000, -32768, -3000]), ...
+                                                        0);
+assert (isequal (faults, logical ([0, 1, 0])));
+assert (isequal (conditioned, [-1, -2, -3]));
+
+tagged_raw = int16 ([1000, 32762, 32760, 32763, 32764, 32761, ...
+                     32765, 3000]);
+current_status = ts_decode_current_status (tagged_raw);
+assert (current_status.fault_r(2));
+assert (current_status.brake(3));
+assert (current_status.fault_l(4));
+assert (current_status.fault_both(5));
+assert (current_status.coast(6));
+assert (current_status.unavailable(7));
+[conditioned, faults] = ts_condition_current_for_plot ( ...
+    [1, NaN, NaN, NaN, NaN, NaN, NaN, 3], tagged_raw, 0, current_status);
+assert (isequal (faults, logical ([0, 1, 0, 1, 1, 0, 0, 0])));
+assert (conditioned(2) == 2 && conditioned(4) == 2 ...
+        && conditioned(5) == 2);
+assert (isnan (conditioned(3)) && isnan (conditioned(6)) ...
+        && isnan (conditioned(7)));
+
 fs = 500;
 t = (0:(24 * fs - 1)) / fs;
 speed_rpm = [613 * ones(1, 8 * fs), 887 * ones(1, 8 * fs), ...
@@ -49,16 +73,17 @@ calibration = ts_calculate_angle_lut (synthetic, 256);
 assert (calibration.speed_reduction_percent > 70);
 assert (calibration.max_abs_correction_counts == 1024);
 assert (calibration.payload_crc32 == ...
-        ts_crc32_ieee (ts_int16_le_bytes (calibration.correction_counts)));
-corrected = ts_apply_angle_lut (measured_angle, ...
-                                calibration.correction_counts, ...
-                                calibration.full_scale_counts);
+        ts_crc32_ieee (esp_angle_lut_int16_le_bytes ( ...
+            calibration.correction_counts)));
+corrected = esp_angle_lut_apply (measured_angle, ...
+                                 calibration.correction_counts, ...
+                                 calibration.full_scale_counts);
 phase_error = mod (corrected - true_angle + 180, 360) - 180;
 assert (sqrt (mean (phase_error .^ 2)) < 0.15);
 
 calibration_12_bit = ts_calculate_angle_lut (synthetic, 256, 4096, 256);
 assert (calibration_12_bit.full_scale_counts == 4096);
-corrected_12_bit = ts_apply_angle_lut (...
+corrected_12_bit = esp_angle_lut_apply (...
     measured_angle, calibration_12_bit.correction_counts, ...
     calibration_12_bit.full_scale_counts);
 phase_error_12_bit = mod (corrected_12_bit - true_angle + 180, 360) - 180;

@@ -6,7 +6,7 @@ Este repositório contém a demonstração da integração do encoder magnético
 
 O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consome suas dependências externas através de submódulos do Git.
 
-> **Para entender o código:** leia o [Guia do código e da arquitetura de tempo real](docs/arquitetura-tempo-real.md). Ele descreve o boot, o ciclo de 4 kHz, o controle de 1 kHz, todas as estruturas internas e cada campo dos logs.
+> **Para entender o código:** leia o [Guia do código e da arquitetura de tempo real](docs/arquitetura-tempo-real.md). Ele descreve o boot, o ciclo de 3 kHz, o controle de 1 kHz, todas as estruturas internas e cada campo dos logs.
 
 ---
 
@@ -14,19 +14,22 @@ O projeto está configurado para rodar no microcontrolador **ESP32-S3** e consom
 
 O espaço de trabalho está estruturado da seguinte forma:
 - **`components/esp-mt6701`**: Submódulo Git para o driver do sensor MT6701, utilizando o driver moderno I2C Master do ESP-IDF (`driver/i2c_master.h`) e otimizado para rodar estritamente como somente leitura (calibrações de offset e direção resolvidas em software).
-- **`components/esp-engine-driver`**: Submódulo Git para o driver da ponte H BTS7960, responsável pelo MCPWM e pela aquisição opcional de `R_IS` com ADC1/DMA.
+- **`components/esp-engine-driver`**: Submódulo Git para o driver da ponte H BTS7960, responsável pelo MCPWM e pela aquisição opcional de `R_IS` e `L_IS` com ADC1/DMA.
+- **`components/esp_pid`**: PID reutilizável por instância, com saturação, derivada filtrada e anti-windup por back-calculation.
 - **`components/kalman-filter-c`**: Submódulo Git apontando para a biblioteca pura em C do Filtro de Kalman.
 - **`components/esp_rt_diagnostics`**: Componente reutilizável de desenvolvimento para estatísticas temporais limitadas, contadores de eventos, deadlines e snapshots imutáveis de diagnóstico. Não captura séries temporais.
-- **`main/`**: Aplicação em tempo real que lê o MT6701 e atualiza o Kalman a **4 kHz**, executa um PID de velocidade a **1 kHz**, comanda a ponte H e publica telemetria a cada 5 segundos.
+- **`components/esp_rt_diagnostics_reporter`**: Reporter assíncrono reutilizável que transfere diagnóstico e um payload da aplicação para uma tarefa de baixa prioridade sem bloquear o loop monitorado.
+- **`main/`**: Aplicação em tempo real que lê o MT6701 e atualiza o Kalman a **3 kHz**, executa um PID de velocidade a **1 kHz**, comanda a ponte H e publica telemetria a cada 5 segundos.
 
 ### Separação de responsabilidades
 
 | Responsabilidade | Onde está | Função |
 |---|---|---|
-| Aquisição e estimação | `realtime_loop.c` e `engine_angle_kalman.c` | Lê o sensor e estima ângulo, velocidade e aceleração a 4 kHz |
-| Controle | `motor_controller.c` | Executa PID a 1 kHz e alterna a referência entre 600 e 900 RPM a cada 20 s |
+| Aquisição e estimação | `realtime_loop.c` e `engine_angle_kalman.c` | Lê o sensor e estima ângulo, velocidade e aceleração a 3 kHz |
+| Controle | `components/esp_pid` e `motor_controller.c` | Executa o PID reutilizável a 1 kHz e alterna a referência do ensaio a cada 2 s por padrão |
 | Instrumentação | `components/esp_rt_diagnostics` | Mede jitter, duração, erros e violações de deadline; não imprime |
-| Telemetria | `realtime_telemetry.c` e `.h` | Mantém a fila, copia os resultados para o Core 0 e imprime; não controla o motor |
+| Apresentação | `components/esp_rt_diagnostics_reporter` | Mantém a fila overwrite, a tarefa no Core 0, os logs genéricos e a classificação quiet/log-affected |
+| Telemetria da aplicação | `realtime_telemetry.c` e `.h` | Define o payload do motor e formata estado do motor/corrente/gravador por callback |
 
 **Instrumentação mede o comportamento temporal. Telemetria transporta e apresenta essas medidas.** Nenhuma delas faz parte da lei de controle.
 
@@ -53,11 +56,12 @@ Expõe as seguintes opções no Kconfig para controle do BTS7960:
 *   **`CONFIG_ENGINE_PIN_RPWM`** (Padrão: `1`): GPIO para o sinal PWM Horário (RPWM).
 *   **`CONFIG_ENGINE_PIN_LPWM`** (Padrão: `2`): GPIO para o sinal PWM Anti-horário (LPWM).
 *   **`CONFIG_ENGINE_PIN_ENABLE`** (Padrão: `3`): GPIO de Enable para R_EN/L_EN interligados.
+*   **`CONFIG_ENGINE_DIRECTION_DEAD_TIME_US`** (Padrão: `50`): Intervalo em COAST inserido antes de inverter um comando não nulo.
 
 ### Diagnóstico de Tempo Real (Desenvolvimento)
 *   **`CONFIG_ESP_RT_DIAGNOSTICS_ENABLE`** (Padrão: `y`): Habilita a coleta e publicação dos snapshots. Ao desabilitá-lo, a instrumentação do caminho crítico é compilada como no-op.
 *   **`CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING`** (Padrão: `y`): Mede as etapas nomeadas de I2C, Kalman, controle e snapshot, além dos intervalos de amostragem e controle.
-*   **`CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`** (Padrão: `5000`): Define a janela de acumulação dos snapshots.
+*   **`CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS`** (Padrão: `5000`): Define a janela padrão; cada instância de `esp_rt_diag_config_t` pode sobrescrevê-la.
 
 Esses snapshots combinam diagnóstico temporal reutilizável com um estado
 instantâneo do PID definido pela aplicação. São diagnósticos de desenvolvimento,
@@ -65,15 +69,20 @@ não uma captura de séries temporais do controle.
 
 ### Medição de corrente da BTS7960
 
-*   **`CONFIG_ENGINE_CURRENT_SENSE_ENABLE`** (Padrão: `y`): Habilita ADC1 contínuo e DMA para `R_IS` dentro do driver da ponte.
-*   **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`** (Padrão: `4`): Entrada ADC após o condicionamento e proteção.
-*   **`CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`** (Padrão: `25000`): Taxa de conversão; cada frame de 1 ms contém 25 amostras e fornece média e mediana.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_ENABLE`** (Padrão: `y`): Habilita ADC1 contínuo e DMA para as duas saídas de corrente da ponte.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS`** (Padrão: `4`): Entrada ADC condicionada para corrente no sentido horário.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_GPIO_L_IS`** (Padrão: `5`): Entrada ADC condicionada independente para corrente no sentido anti-horário.
+*   **`CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ`** (Padrão: `25000`): Taxa de conversão por canal; cada frame de 1 ms contém 25 amostras de cada entrada e fornece média e mediana.
 *   As resistências da placa, série e pulldown, além da relação nominal `k_ILIS`, também são configuráveis.
 
-A placa medida possui 10 kΩ entre `R_IS` e GND. O circuito esperado adiciona
-10 kΩ em série até o ADC, 1 kΩ do ADC para GND, 100 nF do ADC para GND e clamps
-Schottky externos para 3,3 V/GND. Consulte a documentação do driver antes
-de conectar o GPIO.
+A placa medida possui 10 kΩ entre cada saída de corrente e GND. Cada entrada usa
+seu próprio resistor série de 10 kΩ, pulldown de 1 kΩ no nó do ADC, capacitor de
+100 nF e clamps Schottky externos para 3,3 V/GND. Não una `R_IS` e `L_IS`. A
+corrente capturada segue o estado efetivo da ponte: `R_IS` no acionamento
+positivo e `L_IS`, com sinal negativo, no acionamento negativo. Falhas de cada
+entrada, `BRAKE`, `COAST` e indisponibilidade são códigos reservados no mesmo
+`int16_t`; portanto, continuam sendo armazenados cinco canais e 13.107 amostras.
+Consulte a documentação do driver antes de conectar qualquer GPIO.
 
 ### Captura de séries temporais
 
@@ -100,7 +109,7 @@ O componente reutilizável `esp_angle_lut` corrige um ângulo cíclico em contag
 nativas antes do estimador de Kalman. Sua escala completa configurável aceita
 resoluções de sensores, em potência de dois, entre 8 e 16 bits; esta aplicação
 usa 14 bits para o MT6701. As 256 correções em contagens são interpoladas no
-caminho de 4 kHz e armazenadas em dois slots NVS protegidos por CRC. O console
+caminho de 3 kHz e armazenadas em dois slots NVS protegidos por CRC. O console
 Octave realiza o ensaio, calcula e valida a LUT, envia os dados
 binários, verifica a leitura de volta e só então a habilita. O canal registrado
 `angle_raw` permanece sempre sem correção, impedindo que uma recalibração
@@ -110,6 +119,7 @@ Quando o buffer enche, permanece imutável em `FULL` até `CLEAR`. A API já exp
 metadados, endereços, escalas, contadores de saturação/valores inválidos e uma
 visão estável do payload ao componente separado de transporte USB. A porta USB
 Serial/JTAG nativa aceita `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`,
+`CONTROL ...`,
 `CAL ...` e `HELP`. `DUMP` envia um cabeçalho texto autodescritivo seguido das amostras
 binárias little-endian protegidas por CRC-32/IEEE. Consulte
 `tools/octave/README.md` para receber, converter e plotar a captura. A UART0
@@ -131,32 +141,31 @@ Para suportar altas velocidades de rotação (como 30.000 RPM ou mais) e garanti
 *   Isso torna a interface I2C **somente leitura** durante o funcionamento do sistema, assegurando compatibilidade com tensões de 3.3V no barramento e eliminando riscos de corromper a EEPROM física.
 
 ### 2. Leitura I2C de Alta Velocidade (2 Bytes em Burst)
-*   Para reduzir ao mínimo a transação no barramento, a tarefa de estimação a 4 kHz executa uma única leitura em lote de **2 bytes** para obter o ângulo completo de 14 bits dos registradores `0x03` e `0x04`.
+*   Em cada ciclo de 333,333 µs do estimador, a aplicação executa uma leitura I2C síncrona em rajada de **2 bytes** dos registradores `0x03` e `0x04`. A transação termina antes da atualização do Kalman, portanto o estimador sempre usa a amostra mais recente e não precisa de projeção do pipeline.
 *   A transação combinada requer aproximadamente 45 pulsos de SCL, correspondendo a um mínimo teórico de **~45 µs** com clock de 1 MHz.
 *   O datasheet especifica período mínimo de SCL de 1 µs, permitindo 1 MHz, desde que os tempos de subida e descida de SDA/SCL não ultrapassem 150 ns. Pull-ups externos adequados e conexões curtas são recomendados; 400 kHz permanece disponível como alternativa conservadora no `menuconfig`.
 
 ### 3. Medição Dinâmica do Delta de Tempo (`dt`)
-*   Em vez de assumir um período ideal de `0.00025s` (250 µs), a tarefa mede o tempo real entre amostras usando **`esp_timer_get_time()`**.
-*   Esse delta de tempo real (`dt`) é passado diretamente para o Filtro de Kalman.
-*   Isso reduz o erro causado por jitter do scheduler, preempção de tarefas e latência do barramento I2C.
+*   O driver MT6701 marca o instante em que cada aquisição síncrona termina. O intervalo real entre esses instantes, e não um período ideal fixo, é passado ao Kalman.
+*   O PID usa diretamente o estado atual do Kalman. Não há projeção futura do ângulo, da velocidade ou da aceleração.
 
 ### 4. Agendamento em Duas Taxas
-*   Um **GPTimer** gera uma interrupção a cada 250 µs. A ISR apenas envia uma notificação direta para a tarefa de tempo real; nenhuma transação I2C ou operação do Kalman é executada dentro da interrupção.
-*   O MT6701 e o estado completo do Kalman (posição, velocidade e aceleração) são atualizados a **4 kHz**.
-*   A cada quatro amostras, o PID calcula e aplica um comando limitado entre **0% e 98%**, resultando em uma taxa de controle de **1 kHz**. O comando zero coloca a ponte em `COAST`. Para ensaios de sintonia, a referência alterna entre **600 e 900 RPM** a cada 20 segundos.
-*   Uma tarefa de baixa prioridade no Core 0 recebe telemetria a cada **5 segundos**. Ela preserva a janela afetada pela impressão anterior e a exibe junto da janela silenciosa seguinte, identificando-as como `log-affected` e `quiet`. O relatório aparece a cada **10 segundos**, sem esconder o impacto da própria instrumentação. Nenhuma formatação ou impressão ocorre no Core 1 depois que o GPTimer é iniciado.
+*   Um **GPTimer de 1 MHz** usa o padrão periódico de alarmes absolutos **333/333/334 µs**. Os três intervalos totalizam exatamente 1 ms, resultando em média exata de 3 kHz. A ISR rearma o próximo alarme e envia uma notificação direta para a tarefa de tempo real; nenhuma transação I2C ou operação do Kalman é executada dentro da interrupção.
+*   O MT6701 e o estado completo do Kalman (posição, velocidade e aceleração) são atualizados a **3 kHz**.
+*   A cada três amostras, o PID calcula e aplica um comando com sinal, limitado entre **-100% e 100%**, resultando em uma taxa exata de controle de **1 kHz**. Comandos positivos acionam o motor para frente, comandos negativos aplicam torque reverso e o zero exato seleciona frenagem dinâmica. Para ensaios de sintonia, a referência alterna entre **600 e 900 RPM** a cada 2 segundos por padrão. Antes de `ARM`, o Octave pode consultar ou substituir temporariamente `Kp`, `Ki`, `Kd` e o período; um reset restaura os padrões compilados.
+*   Uma tarefa de baixa prioridade no Core 0 recebe telemetria a cada **5 segundos**. Ela preserva a janela afetada pela impressão anterior e a exibe junto da janela silenciosa seguinte, identificando-as como `log-affected` e `quiet`. A configuração de teste emite uma linha compacta de diagnóstico e uma linha compacta de estado por janela. O relatório aparece a cada **10 segundos**, sem esconder o impacto da própria instrumentação. Nenhuma formatação ou impressão ocorre no Core 1 depois que o GPTimer é iniciado.
 
 ### 5. Isolamento do Loop de Tempo Real
 *   A tarefa completa de aquisição, estimação e controle é criada com `xTaskCreatePinnedToCore()` no **Core 1**, usando a prioridade `configMAX_PRIORITIES - 1`.
 *   O barramento I2C, o MT6701 e o GPTimer são inicializados dentro dessa própria tarefa. Assim, as interrupções dos periféricos são alocadas a partir do Core 1, evitando migração da tarefa e cruzamentos de núcleo no caminho crítico.
 *   A tarefa `app_main`, os serviços de `esp_timer` e a tarefa de telemetria permanecem no **Core 0**.
 *   O ESP32-S3 opera a **240 MHz**, o firmware é compilado com otimização de desempenho e os mutexes dos drivers são removidos porque os periféricos possuem um único proprietário.
-*   O tick do FreeRTOS permanece em **1 kHz**: a temporização de 4 kHz vem do GPTimer e não exige elevar a frequência global do escalonador.
+*   O tick do FreeRTOS permanece em **1 kHz**: a temporização de 3 kHz vem do GPTimer e não exige elevar a frequência global do escalonador.
 
 ### 6. Diagnóstico Temporal por Janela
 *   A telemetria é copiada para o Core 0 somente uma vez a cada 5 segundos, em vez de atualizar uma fila a cada ciclo de controle. Janelas silenciosas e afetadas pelo log são apresentadas separadamente.
-*   Cada janela informa taxas efetivas, notificações perdidas, erros I2C, violações do deadline de 250 µs e mínimos/máximos de `dt`. Falhas mostram o valor da janela e o total acumulado.
-*   Os máximos de latência de despertar, transação I2C, Kalman, controle e processamento total são reiniciados em cada janela. Um máximo vitalício separado é mantido apenas como referência.
+*   Cada janela informa taxas efetivas, notificações perdidas, erros I2C, violações do deadline de 334 µs e mínimos/máximos de `dt`. Falhas mostram o valor da janela e o total acumulado.
+*   Médias, máximos e contadores de violação dos orçamentos de cada etapa são reiniciados em cada janela. Um máximo vitalício do processamento é mantido apenas como referência.
 
 ---
 

@@ -4,13 +4,18 @@ menu "Application I2C Configurations"
         int "GPIO number for I2C SDA"
         default 8
         help
-            GPIO pin used for I2C SDA data line.
+            GPIO connected to the MT6701 SDA line. The application creates
+            I2C port 0 on Core 1 and enables the ESP32 internal pull-up only
+            as a fallback. At 1 MHz, use an appropriate external pull-up and
+            short wiring. The pin must not be assigned to another peripheral.
 
     config APP_I2C_SCL_PIN
         int "GPIO number for I2C SCL"
         default 9
         help
-            GPIO pin used for I2C SCL clock line.
+            GPIO connected to the MT6701 SCL line. It shares I2C port 0 with
+            the SDA option above and must not be assigned elsewhere. External
+            pull-up and bus timing requirements are the same as for SDA.
 
     config APP_I2C_CLOCK_HZ
         int "MT6701 I2C clock frequency (Hz)"
@@ -20,6 +25,43 @@ menu "Application I2C Configurations"
             I2C clock used to read the MT6701. The sensor supports up to
             1 MHz, provided the physical bus meets its 150 ns maximum
             SDA/SCL rise and fall times. Use 400000 as a conservative fallback.
+
+endmenu
+
+menu "Real-Time Diagnostics Presentation"
+
+    choice APP_RT_DIAGNOSTICS_APPLICATION_REPORT
+        prompt "Application telemetry beside RT diagnostics"
+        depends on ESP_RT_DIAGNOSTICS_ENABLE
+        default APP_RT_DIAGNOSTICS_APPLICATION_REPORT_COMPACT
+        help
+            Select how much application state is printed after each generic
+            RT_DIAG snapshot. This does not affect startup, error, USB
+            protocol, or generic diagnostic messages.
+
+        config APP_RT_DIAGNOSTICS_APPLICATION_REPORT_NONE
+            bool "None"
+            help
+                Suppress application state lines. Generic RT_DIAG reports
+                remain enabled and continue to show timing, missed releases,
+                overruns, stages, events, and intervals. This minimizes serial
+                traffic while retaining reusable timing diagnostics.
+
+        config APP_RT_DIAGNOSTICS_APPLICATION_REPORT_COMPACT
+            bool "Compact state marker"
+            help
+                Print one short line containing operating mode, reference,
+                speed, output, and recorder state. This is recommended while
+                correlating timing anomalies with the motor experiment.
+
+        config APP_RT_DIAGNOSTICS_APPLICATION_REPORT_FULL
+            bool "Full motor/current/recorder report"
+            help
+                Print the complete motor, PID, dual current-sense, and
+                recorder report. This produces substantially more serial
+                traffic and can perturb the following diagnostic window.
+
+    endchoice
 
 endmenu
 
@@ -55,36 +97,38 @@ menu "Control Time-Series Capture"
 
 endmenu
 
-menu "Motor Test Profile"
-
-    config APP_MOTOR_OPEN_LOOP_TEST
-        bool "Enable the host-requested open-loop calibration profile"
-        default n
-        help
-            Allow CAL START to bypass the speed PID and run low/high/low duty
-            stages followed by COAST. A regular ARM always starts a fresh
-            alternating 600/900 RPM closed-loop experiment.
+menu "Open-loop Calibration Profile"
 
     config APP_OPEN_LOOP_DUTY_LOW_PERCENT
         int "Open-loop low duty (percent)"
-        depends on APP_MOTOR_OPEN_LOOP_TEST
         range 0 100
         default 40
+        help
+            Unsigned bridge duty used during the first and third calibration
+            stages. Select a value that maintains several complete rotations
+            without saturating the sensor or supply. This profile bypasses the
+            PID and is started only by the CAL START USB command.
 
     config APP_OPEN_LOOP_DUTY_HIGH_PERCENT
         int "Open-loop high duty (percent)"
-        depends on APP_MOTOR_OPEN_LOOP_TEST
         range 0 100
         default 55
+        help
+            Unsigned bridge duty used during the middle calibration stage.
+            A second speed helps verify that the angular LUT describes a
+            position-dependent sensor error rather than one operating point.
+            This value should normally exceed the low-duty setting.
 
     config APP_OPEN_LOOP_STAGE_SECONDS
         int "Open-loop stage duration (seconds)"
-        depends on APP_MOTOR_OPEN_LOOP_TEST
         range 1 120
         default 8
         help
-            Eight seconds per stage lets a five-channel 500 Hz calibration
-            capture include low/high/low plateaus and return to COAST before
-            the 128 KiB recorder buffer becomes full.
+            Duration of each low/high/low duty stage. Eight seconds per stage
+            lets the five-channel 500 Hz calibration capture include complete
+            settled revolutions and apply BRAKE before the default 128 KiB
+            recorder buffer becomes full. Increasing it can make the buffer
+            fill before the terminal stage; decreasing it can leave too few
+            complete revolutions for a reliable LUT.
 
 endmenu

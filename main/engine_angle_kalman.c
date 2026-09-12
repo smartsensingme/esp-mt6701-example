@@ -1,5 +1,12 @@
 #include "engine_angle_kalman.h"
 
+/**
+ * @brief Predict and correct the application constant-acceleration estimator.
+ *
+ * Called internally only by realtime_task() through the declaration in
+ * engine_angle_kalman.h. It expands the 3x3 matrix operations into scalar
+ * expressions to keep the 3 kHz path bounded and allocation-free.
+ */
 void engine_angle_kalman_3d_update(struct kalman_3d *k, float measured_angle,
                                    float dt) {
   /*
@@ -20,7 +27,7 @@ void engine_angle_kalman_3d_update(struct kalman_3d *k, float measured_angle,
 
   /*
    * P_pred = F * P * F^T + Q. The expressions are expanded explicitly to
-   * avoid general-purpose matrix operations in the 4 kHz path.
+   * avoid general-purpose matrix operations in the fast estimator path.
    */
   float a0 = k->P[0][0] + dt * k->P[1][0] + h * k->P[2][0];
   float a1 = k->P[0][1] + dt * k->P[1][1] + h * k->P[2][1];

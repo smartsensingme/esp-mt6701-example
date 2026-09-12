@@ -4,7 +4,7 @@ CONFIG_IDF_TARGET="esp32s3"
 # must keep SDA/SCL rise and fall times below 150 ns at this speed.
 CONFIG_APP_I2C_CLOCK_HZ=1000000
 
-# Keep the RTOS tick at 1 kHz; the 4 kHz loop is driven by GPTimer.
+# Keep the RTOS tick at 1 kHz; GPTimer drives an exact 3 kHz average rate.
 CONFIG_FREERTOS_HZ=1000
 
 # Core 0 hosts initialization and system/housekeeping services. The application
@@ -12,7 +12,7 @@ CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0=y
 CONFIG_ESP_TIMER_TASK_AFFINITY_CPU0=y
 
-# Maximize execution headroom for the 250 us acquisition deadline.
+# Maximize execution headroom for the 334 us acquisition deadline.
 CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
@@ -21,6 +21,7 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_ESP_RT_DIAGNOSTICS_ENABLE=y
 CONFIG_ESP_RT_DIAGNOSTICS_DETAILED_TIMING=y
 CONFIG_ESP_RT_DIAGNOSTICS_WINDOW_MS=5000
+CONFIG_APP_RT_DIAGNOSTICS_APPLICATION_REPORT_COMPACT=y
 
 # Reusable int16 time-series recorder: 128 KiB internal DRAM, five application
 # channels, armed at a runtime-selected rate by the Octave host.
@@ -40,12 +41,15 @@ CONFIG_ESP_ANGLE_LUT_MAX_ABS_CORRECTION_COUNTS=1024
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 # CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG is not set
 
-# IBT-2 R_IS conditioning: the board's measured 10 kohm resistor remains in
-# place. Add 10 kohm from R_IS to GPIO4, 1 kohm from GPIO4 to GND, a capacitor
-# at GPIO4, and external 3.3 V/GND clamps. A series resistor alone is not a
-# divider and does not protect a high-impedance ADC input.
+# IBT-2 current-sense conditioning: the board's measured 10 kohm resistors
+# remain in place. Independently add 10 kohm from R_IS/L_IS to GPIO4/GPIO5,
+# 1 kohm from each ADC node to GND, one capacitor per ADC node, and external
+# 3.3 V/GND clamps. A series resistor alone is not a divider and does not
+# protect a high-impedance ADC input.
 CONFIG_ENGINE_CURRENT_SENSE_ENABLE=y
+CONFIG_ENGINE_DIRECTION_DEAD_TIME_US=50
 CONFIG_ENGINE_CURRENT_SENSE_GPIO_R_IS=4
+CONFIG_ENGINE_CURRENT_SENSE_GPIO_L_IS=5
 CONFIG_ENGINE_CURRENT_SENSE_SAMPLE_HZ=25000
 CONFIG_ENGINE_CURRENT_SENSE_BOARD_RESISTOR_OHMS=10000
 CONFIG_ENGINE_CURRENT_SENSE_SERIES_RESISTOR_OHMS=10000
@@ -56,6 +60,7 @@ CONFIG_ENGINE_CURRENT_SENSE_FAULT_EXIT_MV=1000
 
 # Keep the timer-to-task wake path available from internal memory.
 CONFIG_GPTIMER_ISR_HANDLER_IN_IRAM=y
+CONFIG_GPTIMER_CTRL_FUNC_IN_IRAM=y
 CONFIG_GPTIMER_OBJ_CACHE_SAFE=y
 CONFIG_ESP_TIMER_IN_IRAM=y
 
@@ -64,8 +69,7 @@ CONFIG_ESP_TIMER_IN_IRAM=y
 # CONFIG_ENGINE_THREAD_SAFE is not set
 
 # Calibration profile: CAL START runs 40/55/40 percent in open loop for
-# 8 seconds each and return to COAST. Each new ARM restarts the profile.
-CONFIG_APP_MOTOR_OPEN_LOOP_TEST=y
+# 8 seconds each and then requests zero output (BRAKE in this application).
 CONFIG_APP_OPEN_LOOP_DUTY_LOW_PERCENT=40
 CONFIG_APP_OPEN_LOOP_DUTY_HIGH_PERCENT=55
 CONFIG_APP_OPEN_LOOP_STAGE_SECONDS=8

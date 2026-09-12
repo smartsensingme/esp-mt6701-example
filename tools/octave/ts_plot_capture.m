@@ -32,9 +32,13 @@ function figure_handle = ts_plot_capture (capture, fontSize)
   if (isfield (capture, "raw"))
     raw_current = capture.raw(current_index, :);
   endif
+  current_status = [];
+  if (isfield (capture, "current_status"))
+    current_status = capture.current_status;
+  endif
   saturation_count = capture.channels(current_index).saturation_count;
   [display_current, current_fault] = ts_condition_current_for_plot ( ...
-      current, raw_current, saturation_count);
+      current, raw_current, saturation_count, current_status);
 
   figure_handle = figure ("name", ...
       sprintf ("Captura de controle ESP32 %d", capture.capture_id), ...
@@ -71,27 +75,77 @@ function figure_handle = ts_plot_capture (capture, fontSize)
   endif
 
   axes_handles(3) = subplot (4, 1, 3);
-  plot (time_s, control, "linewidth", 1.1);
+  control_handle = plot (time_s, control, "linewidth", 1.1);
+  control_handles = control_handle;
+  control_labels = {"acao de controle"};
+  hold on;
+  reverse_braking = isfinite (control) & isfinite (speed) ...
+                    & control .* speed < 0;
+  if (any (reverse_braking))
+    reverse_brake_handle = plot (time_s(reverse_braking), ...
+                                 control(reverse_braking), "v", ...
+                                 "color", [0.90, 0.45, 0.00], ...
+                                 "markersize", 5, ...
+                                 "markerfacecolor", [0.90, 0.45, 0.00]);
+    control_handles(end + 1) = reverse_brake_handle;
+    control_labels{end + 1} = "torque contrario ao movimento";
+  endif
+  if (! isempty (current_status) && any (current_status.brake))
+    brake_handle = plot (time_s(current_status.brake), ...
+                         control(current_status.brake), "mo", ...
+                         "markersize", 5, "markerfacecolor", "m");
+    control_handles(end + 1) = brake_handle;
+    control_labels{end + 1} = "freio ativo (BRAKE)";
+  endif
+  if (numel (control_handles) > 1)
+    legend (control_handles, control_labels, "location", "northeast");
+  endif
+  hold off;
   grid on;
   ylabel ("controle [%]");
 
   axes_handles(4) = subplot (4, 1, 4);
-  plot (time_s, display_current, "linewidth", 1.1);
+  current_handles = plot (time_s, display_current, "linewidth", 1.1);
+  current_labels = {"corrente"};
   hold on;
-  if (any (current_fault))
-    plot (time_s(current_fault), display_current(current_fault), "ro", ...
-          "markersize", 6, "markerfacecolor", "r");
-    legend ("corrente", "amostra invalida/saturada", ...
-            "location", "northeast");
+  if (! isempty (current_status))
+    [current_handles, current_labels] = add_fault_markers ( ...
+        current_handles, current_labels, time_s, display_current, ...
+        current_status.fault_r, "ro", "falha R_IS");
+    [current_handles, current_labels] = add_fault_markers ( ...
+        current_handles, current_labels, time_s, display_current, ...
+        current_status.fault_l, "rs", "falha L_IS");
+    [current_handles, current_labels] = add_fault_markers ( ...
+        current_handles, current_labels, time_s, display_current, ...
+        current_status.fault_both, "rd", "falha R_IS + L_IS");
+    uncategorized_fault = current_fault & ! current_status.fault;
+  else
+    uncategorized_fault = current_fault;
+  endif
+  [current_handles, current_labels] = add_fault_markers ( ...
+      current_handles, current_labels, time_s, display_current, ...
+      uncategorized_fault, "ro", "amostra invalida/saturada");
+  if (numel (current_handles) > 1)
+    legend (current_handles, current_labels, "location", "northeast");
   endif
   hold off;
   grid on;
-  ylabel ("corrente [A]");
+  ylabel ("corrente assinada [A]");
   xlabel ("tempo [s]");
 
   linkaxes (axes_handles, "x");
   set (findall (figure_handle, "type", "axes"), "fontsize", fontSize);
   set (findall (figure_handle, "type", "text"), "fontsize", fontSize);
+endfunction
+
+function [handles, labels] = add_fault_markers (handles, labels, time_s, ...
+                                                 current, mask, style, label)
+  if (any (mask))
+    marker = plot (time_s(mask), current(mask), style, "markersize", 6, ...
+                   "markerfacecolor", "r");
+    handles(end + 1) = marker;
+    labels{end + 1} = label;
+  endif
 endfunction
 
 function index = channel_index (capture, name)
