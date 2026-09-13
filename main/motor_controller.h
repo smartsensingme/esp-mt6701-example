@@ -182,20 +182,4 @@ float motor_controller_update(motor_controller_t *controller,
 void motor_controller_get_status(const motor_controller_t *controller,
                                  motor_controller_status_t *status);
 
-/**
- * @brief Describe the next automatic closed-loop reference transition.
- *
- * Called internally by arm_recorder_before_reference_step() when automatic
- * capture is compiled in. Output pointers are written only in closed-loop mode.
- *
- * @param controller Controller to inspect.
- * @param seconds_remaining Destination for nonnegative seconds until the step.
- * @param step_id Destination for the one-based identifier of the next step.
- * @return true in the alternating-reference profile; false in open-loop mode
- * or for invalid arguments.
- */
-bool motor_controller_get_next_reference_step(
-    const motor_controller_t *controller, float *seconds_remaining,
-    uint32_t *step_id);
-
 #endif /* MOTOR_CONTROLLER_H_ */

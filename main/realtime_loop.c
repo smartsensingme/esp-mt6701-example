@@ -106,12 +106,6 @@ _Static_assert(REALTIME_DIAG_EVENT_COUNT <= ESP_RT_DIAG_MAX_EVENTS,
                "Application declares too many diagnostic events");
 _Static_assert(REALTIME_DIAG_INTERVAL_COUNT <= ESP_RT_DIAG_MAX_INTERVALS,
                "Application declares too many diagnostic intervals");
-#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
-_Static_assert(REALTIME_CONTROL_RATE_HZ %
-                       CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ ==
-                   0,
-               "Automatic recorder rate must divide the control rate");
-#endif
 
 static const char *TAG = "REALTIME_LOOP";
 
@@ -399,41 +393,6 @@ static float capture_current_for_driver(const struct engine_config *motor) {
   return tagged_current_value(CAPTURE_CURRENT_UNAVAILABLE_I16);
 #endif
 }
-
-#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
-/**
- * @brief Arm automatic recording shortly before the next reference transition.
- *
- * Called internally only by realtime_task() at 1 kHz when automatic capture is
- * enabled in Kconfig. Each step identifier is armed at most once, and a
- * nonempty recorder is never disturbed.
- */
-static void
-arm_recorder_before_reference_step(const motor_controller_t *controller,
-                                   uint32_t *last_armed_step_id) {
-  /* Availability block: FULL, ARMED, or CAPTURING data always wins. */
-  if (esp_timeseries_get_state() != ESP_TIMESERIES_STATE_EMPTY) {
-    return;
-  }
-
-  /* Trigger block: query closed-loop timing and enter only the pretrigger
-   * window for a reference step that has not already been attempted. */
-  float seconds_remaining = 0.0f;
-  uint32_t step_id = 0U;
-  if (!motor_controller_get_next_reference_step(controller, &seconds_remaining,
-                                                &step_id) ||
-      step_id == *last_armed_step_id ||
-      seconds_remaining >
-          (float)CONFIG_APP_TIMESERIES_PRETRIGGER_MS / 1000.0f) {
-    return;
-  }
-  /* Publication block: remember the step only after recorder ARM succeeds. */
-  if (esp_timeseries_arm(CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ) ==
-      ESP_OK) {
-    *last_armed_step_id = step_id;
-  }
-}
-#endif
 
 /* ============================ 3 KHZ SCHEDULER ============================ */
 
@@ -749,9 +708,6 @@ static void realtime_task(void *argument) {
   int64_t last_sample_time_us = context->sensor.last_timestamp_us;
   int64_t last_control_time_us = last_sample_time_us;
   float motor_output_percent = 0.0f;
-#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
-  uint32_t last_armed_step_id = 0U;
-#endif
 #if CONFIG_ESP_RT_DIAGNOSTICS_ENABLE
   esp_rt_diag_t diagnostics;
   esp_rt_diag_t *diagnostics_ptr = &diagnostics;
@@ -848,9 +804,6 @@ static void realtime_task(void *argument) {
                            control_dt_us);
       int64_t control_stage_start_us = esp_rt_diag_stage_begin();
 
-#if CONFIG_APP_TIMESERIES_AUTO_CAPTURE
-      arm_recorder_before_reference_step(&controller, &last_armed_step_id);
-#endif
       /* Profile-request block: synchronize USB ARM with controller reset only
        * inside the 1 kHz owner task. */
       esp_timeseries_state_t recorder_state = esp_timeseries_get_state();

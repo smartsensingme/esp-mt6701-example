@@ -198,10 +198,19 @@ function value = required_number (metadata, key)
 endfunction
 
 function payload = read_exact (device, byte_count)
+  % Keep each serialport request deliberately small.  In particular, the
+  % instrument-control back end on Windows may remain blocked when one read()
+  % asks for the complete (typically 128 KiB) capture at once, even though the
+  % USB CDC/Serial-JTAG driver is delivering smaller packets normally.
+  read_chunk_bytes = 4096;
+  progress_step_percent = 10;
   payload = zeros (byte_count, 1, "uint8");
   offset = 1;
+  next_progress_percent = progress_step_percent;
   while (offset <= byte_count)
-    chunk = read (device, byte_count - offset + 1, "uint8");
+    remaining = byte_count - offset + 1;
+    requested = min (remaining, read_chunk_bytes);
+    chunk = read (device, requested, "uint8");
     if (isempty (chunk))
       error ("USB timeout after %d of %d payload bytes", offset - 1, ...
              byte_count);
@@ -210,5 +219,18 @@ function payload = read_exact (device, byte_count)
     last = offset + numel (chunk) - 1;
     payload(offset:last) = chunk;
     offset = last + 1;
+
+    % Report bounded progress so a slow or interrupted Windows transfer is
+    % distinguishable from a frozen Octave process.
+    received_percent = floor (100 * (offset - 1) / byte_count);
+    if (received_percent >= next_progress_percent || offset > byte_count)
+      fprintf ("\rDownload: %6d/%6d bytes (%3d%%)", ...
+               offset - 1, byte_count, received_percent);
+      fflush (stdout);
+      while (next_progress_percent <= received_percent)
+        next_progress_percent += progress_step_percent;
+      endwhile
+    endif
   endwhile
+  fprintf ("\n");
 endfunction

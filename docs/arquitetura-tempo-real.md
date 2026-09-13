@@ -684,23 +684,19 @@ continua em 1 kHz; quem produz os 3 kHz é o GPTimer.
 
 - `CONFIG_ESP_TIMESERIES_RECORDER_BUFFER_KIB`: reserva estática, padrão 128 KiB;
 - `CONFIG_ESP_TIMESERIES_RECORDER_MAX_CHANNELS`: máximo de descritores, padrão 16;
-- `CONFIG_APP_TIMESERIES_AUTO_CAPTURE`: captura antes dos degraus, desabilitada
-  por padrão quando o Octave controla `ARM` e `CLEAR`;
-- `CONFIG_APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ`: padrão 500 Hz;
-- `CONFIG_APP_TIMESERIES_PRETRIGGER_MS`: padrão 1000 ms.
 - `CONFIG_ESP_TIMESERIES_USB_TRANSPORT_ENABLE`: habilita comandos na USB nativa;
 - buffers RX/TX e timeout de escrita do transporte também são configuráveis.
 
-Na configuração diagnóstica de malha aberta, `ARM` também reinicia o perfil
-40%/55%/40%, com 15 s por estágio e `COAST` antes e depois. O quinto canal é o
-ângulo bruto do MT6701, codificado com escala de 0,01 grau e offset de 180 graus.
-Com cinco canais, 128 KiB e 250 Hz, a janela é de 52,428 s. O cliente mede
-separadamente esse tempo de aquisição e o tempo efetivo do `DUMP` USB.
+No ensaio de calibração em malha aberta, `CAL START <rate_hz>` arma o gravador e
+reinicia o perfil 40%/55%/40%, com 8 s por estágio e BRAKE ao final. O quinto
+canal é o ângulo bruto do MT6701, codificado com escala de 0,01 grau e offset de
+180 graus. Com cinco canais, 128 KiB e 250 Hz, a janela é de 52,428 s. O cliente
+mede separadamente esse tempo de aquisição e o tempo efetivo do `DUMP` USB.
 
-O agendamento automático identifica cada próximo degrau. Depois de `CLEAR`, o
-mesmo degrau não é armado novamente; o firmware espera o identificador seguinte.
-A ordem USB `ARM <rate_hz>` inicia imediatamente sem depender do perfil
-automático, desde que o gravador esteja `EMPTY` e a taxa divida 1 kHz exatamente.
+A aplicação não possui mais pré-disparo automático. `ARM <rate_hz>` inicia uma
+captura de malha fechada e `CAL START <rate_hz>` inicia uma captura de calibração,
+sempre por solicitação explícita do host, desde que o gravador esteja `EMPTY` e
+a taxa divida 1 kHz exatamente.
 
 ### Corrente da BTS7960
 

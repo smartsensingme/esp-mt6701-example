@@ -66,7 +66,10 @@ For an open-loop capture containing the raw `angle_raw` channel (legacy files
 named it `angle`), the panels change
 to speed, wrapped sensor angle, control duty, and current. The console prints
 the predicted/actual acquisition duration separately from the measured USB DUMP
-duration and KiB/s. With the current five-channel diagnostic build, select
+duration and KiB/s. Binary payloads are read in small blocks for compatibility
+with Windows serial drivers, with progress printed every ten percent; a timeout
+therefore reports how many bytes of the advertised payload were received. With
+the current five-channel diagnostic build, select
 250 Hz for a long diagnostic trace. The calibration assistant uses 500 Hz and
 the calibration firmware profile uses three eight-second duty stages, followed
 by BRAKE before the five-channel 128 KiB buffer becomes full.
@@ -133,8 +136,8 @@ The firmware accepts `0 <= Kp <= 100`, `0 <= Ki <= 1000`,
 validate the protocol; they are not a claim that every accepted combination is
 safe or stable for the connected motor.
 
-The default firmware leaves automatic capture disabled so Octave owns the
-ARM/CLEAR sequence. It can still be enabled in Kconfig for standalone tests.
+This application deliberately gives the host exclusive ownership of the
+ARM/CLEAR sequence; there is no application-level automatic pretrigger mode.
 Do not leave another serial monitor connected to the native USB port: two
 readers split protocol bytes. Use the WCH/USB-UART port for firmware logs.
 

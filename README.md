@@ -121,8 +121,8 @@ self-describing text header followed by little-endian binary samples protected
 by CRC-32/IEEE. See `tools/octave/README.md` for the receiver and plotting
 workflow. UART0 remains the firmware log/flash port so logs cannot enter the
 binary stream. Run `ts_console()` in Octave for the guided port selection and
-recorder menus. Automatic capture around reference steps remains available in
-Kconfig, but is disabled by default so it cannot race a host-driven `ARM`.
+recorder menus. Capture is deliberately host-driven: an experiment starts only
+after `ARM`, and a full buffer remains immutable until `CLEAR`.
 The Octave client reports acquisition and USB-transfer times separately; native
 USB CDC does not use the nominal serial baud rate.
 

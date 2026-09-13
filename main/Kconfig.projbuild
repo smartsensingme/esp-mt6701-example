@@ -65,38 +65,6 @@ menu "Real-Time Diagnostics Presentation"
 
 endmenu
 
-menu "Control Time-Series Capture"
-
-    config APP_TIMESERIES_AUTO_CAPTURE
-        bool "Automatically capture around reference steps"
-        default n
-        help
-            Arm the reusable time-series recorder shortly before each new
-            closed-loop reference step. A full capture remains preserved until
-            a transport or application calls CLEAR. Keep this disabled when an
-            external host such as Octave owns the ARM/CLEAR workflow.
-
-    config APP_TIMESERIES_DEFAULT_SAMPLE_RATE_HZ
-        int "Default automatic capture rate (Hz)"
-        depends on APP_TIMESERIES_AUTO_CAPTURE
-        range 1 1000
-        default 500
-        help
-            Runtime sample rate used by automatic captures. It must divide the
-            1 kHz control rate exactly. A future USB command may select a
-            different valid rate for each capture.
-
-    config APP_TIMESERIES_PRETRIGGER_MS
-        int "Time before a reference step to start capture (ms)"
-        depends on APP_TIMESERIES_AUTO_CAPTURE
-        range 1 10000
-        default 1000
-        help
-            Start the automatic recording this long before the next 600/900
-            RPM transition. Each transition is armed at most once.
-
-endmenu
-
 menu "Open-loop Calibration Profile"
 
     config APP_OPEN_LOOP_DUTY_LOW_PERCENT

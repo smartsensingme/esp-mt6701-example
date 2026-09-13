@@ -170,12 +170,12 @@ float motor_controller_update(motor_controller_t *controller,
     return 0.0f;
   }
   if (controller->mode == MOTOR_CONTROLLER_MODE_OPEN_LOOP_TEST) {
-    /* Open-loop timing block: while permits recovery across a delayed update
-     * without ever indexing beyond the terminal zero-output stage. */
+    /* Open-loop timing block: valid dt is below 0.1 s, whereas each stage lasts
+     * at least one second. Consequently, one update can cross at most one stage
+     * boundary; retaining the excess time prevents cumulative phase drift. */
     if (valid_dt && controller->open_loop_stage < 3U) {
       controller->profile_elapsed_s += dt;
-      while (controller->profile_elapsed_s >= open_loop_stage_period_s &&
-             controller->open_loop_stage < 3U) {
+      if (controller->profile_elapsed_s >= open_loop_stage_period_s) {
         controller->profile_elapsed_s -= open_loop_stage_period_s;
         controller->open_loop_stage++;
       }
@@ -189,12 +189,14 @@ float motor_controller_update(motor_controller_t *controller,
     return controller->output_percent;
   }
 
-  /* Closed-loop profile block: alternate references and retain fractional
-   * elapsed time if one update crosses one or more step boundaries. */
+  /* Closed-loop profile block: dt is below 0.1 s and the validated reference
+   * period is at least 0.1 s. One update therefore crosses at most one
+   * boundary; subtracting instead of clearing retains the fractional excess
+   * time. */
   if (valid_dt) {
     controller->profile_elapsed_s += dt;
-    while (controller->profile_elapsed_s >=
-           controller->config.reference_step_period_s) {
+    if (controller->profile_elapsed_s >=
+        controller->config.reference_step_period_s) {
       controller->profile_elapsed_s -=
           controller->config.reference_step_period_s;
       controller->reference_step_count++;
@@ -245,29 +247,4 @@ void motor_controller_get_status(const motor_controller_t *controller,
           controller->mode == MOTOR_CONTROLLER_MODE_OPEN_LOOP_TEST,
       .open_loop_test_started = controller->open_loop_test_started,
   };
-}
-
-/**
- * @brief Return timing and identity of the next closed-loop reference step.
- *
- * Called by arm_recorder_before_reference_step() when automatic capture is
- * enabled. See motor_controller.h for the public contract.
- */
-bool motor_controller_get_next_reference_step(
-    const motor_controller_t *controller, float *seconds_remaining,
-    uint32_t *step_id) {
-  /* Preconditions/mode block: output pointers remain untouched on failure. */
-  if (controller == NULL || seconds_remaining == NULL || step_id == NULL) {
-    return false;
-  }
-  if (controller->mode != MOTOR_CONTROLLER_MODE_CLOSED_LOOP) {
-    return false;
-  }
-  /* Result block: clamp numerical residue to zero and identify the next step.
-   */
-  float remaining = controller->config.reference_step_period_s -
-                    controller->profile_elapsed_s;
-  *seconds_remaining = remaining > 0.0f ? remaining : 0.0f;
-  *step_id = controller->reference_step_count + 1U;
-  return true;
 }

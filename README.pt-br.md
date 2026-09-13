@@ -125,8 +125,9 @@ binárias little-endian protegidas por CRC-32/IEEE. Consulte
 `tools/octave/README.md` para receber, converter e plotar a captura. A UART0
 continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo
 binário. Execute `ts_console()` no Octave para selecionar a porta e operar o
-gravador por menus guiados. A captura automática ao redor dos degraus continua
-disponível no Kconfig, mas vem desabilitada para não disputar um `ARM` do host.
+gravador por menus guiados. A captura é deliberadamente comandada pelo host: um
+ensaio começa somente depois de `ARM`, e o buffer cheio permanece imutável até
+`CLEAR`.
 O cliente Octave informa separadamente os tempos de aquisição e transferência;
 a USB CDC nativa não usa efetivamente o baud rate nominal da API serial.
 
