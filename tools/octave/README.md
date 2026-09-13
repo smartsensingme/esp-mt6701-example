@@ -1,5 +1,27 @@
 # Octave receiver
 
+## Reusable client and application adapters
+
+The protocol implementation now lives in
+[`../esp_timeseries_octave`](../esp_timeseries_octave/README.md). It provides
+`esp_ts_*` functions for connection, commands, capture metadata, framed binary
+or retryable hex blocks, CRC checking, decoding, waiting, and explicit saving
+and clearing. It has no motor, PID, or angular-LUT dependency.
+
+This directory retains the textual motor console, calibration workflow, plotting,
+and current/fault interpretation. Existing `ts_command`, `ts_open_serial`,
+`ts_list_serial_ports`, `ts_load_instrument_control`, `ts_decode_payload`, and
+`ts_crc32_ieee` are compatibility adapters, not duplicate implementations.
+`ts_capture` adds application interpretation and optional save/plot/clear around
+the generic downloader. `ts_load_timeseries_tools` loads the staged library
+automatically, so `ts_console` usage is unchanged.
+
+The library is an independent MIT-licensed repository, included as a submodule.
+Run `git submodule update --init --recursive` after updating this project.
+Installation uses `addpath`, not an Octave `pkg install` archive.
+
+## Running the motor console
+
 Requires GNU Octave and the instrument-control package version providing the
 serialport API:
 

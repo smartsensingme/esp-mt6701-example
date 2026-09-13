@@ -1,7 +1,5 @@
-function crc = ts_crc32_ieee (bytes)
-  if (nargin != 1)
-    print_usage ();
-  endif
-  ts_load_angle_lut_tools ();
-  crc = esp_angle_lut_crc32_ieee (bytes);
+function varargout = ts_crc32_ieee (varargin)
+  % Application compatibility entry point; implementation lives in the library.
+  ts_load_timeseries_tools ();
+  [varargout{1:nargout}] = esp_ts_crc32 (varargin{:});
 endfunction
