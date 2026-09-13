@@ -2,9 +2,10 @@ function calibration = ts_calibration_read (endpoint)
   if (nargin != 1)
     print_usage ();
   endif
+  ts_load_timeseries_tools ();
   owns_device = ischar (endpoint);
   if (owns_device)
-    device = ts_open_serial (endpoint, 10);
+    device = esp_ts_open (endpoint, 10);
   else
     device = endpoint;
   endif
@@ -47,7 +48,7 @@ function calibration = ts_calibration_read (endpoint)
     payload = read_exact (device, payload_bytes);
     expected_crc = uint32 (hex2dec (required_text (metadata, ...
                                                    "payload_crc32")));
-    actual_crc = ts_crc32_ieee (payload);
+    actual_crc = esp_ts_crc32 (payload);
     if (actual_crc != expected_crc)
       error ("Calibration readback CRC mismatch");
     endif

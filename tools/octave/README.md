@@ -9,16 +9,30 @@ or retryable hex blocks, CRC checking, decoding, waiting, and explicit saving
 and clearing. It has no motor, PID, or angular-LUT dependency.
 
 This directory retains the textual motor console, calibration workflow, plotting,
-and current/fault interpretation. Existing `ts_command`, `ts_open_serial`,
-`ts_list_serial_ports`, `ts_load_instrument_control`, `ts_decode_payload`, and
-`ts_crc32_ieee` are compatibility adapters, not duplicate implementations.
+and current/fault interpretation. Generic operations call `esp_ts_*` directly.
 `ts_capture` adds application interpretation and optional save/plot/clear around
-the generic downloader. `ts_load_timeseries_tools` loads the staged library
+the generic downloader. `ts_load_timeseries_tools` loads the library
 automatically, so `ts_console` usage is unchanged.
 
 The library is an independent MIT-licensed repository, included as a submodule.
 Run `git submodule update --init --recursive` after updating this project.
 Installation uses `addpath`, not an Octave `pkg install` archive.
+
+### Removed compatibility adapters
+
+The following forwarding-only functions were removed. Update external scripts
+using this mapping and call `ts_load_timeseries_tools()` after adding
+`tools/octave` to the path (or add the library's `inst/` directory directly).
+The console and standalone calibration entry points load the library themselves.
+
+| Removed function | Replacement |
+|---|---|
+| `ts_command` | `esp_ts_command` |
+| `ts_open_serial` | `esp_ts_open` |
+| `ts_list_serial_ports` | `esp_ts_ports` |
+| `ts_load_instrument_control` | `esp_ts_load_instrument_control` |
+| `ts_decode_payload` | `esp_ts_decode_payload` |
+| `ts_crc32_ieee` | `esp_ts_crc32` |
 
 ## Running the motor console
 
@@ -152,16 +166,23 @@ Valid current is limited to ±32000 mA, leaving the tagged range unambiguous.
 
 The lower-level functions remain available for automated experiments:
 
-    ts_command("/dev/cu.usbmodem1101", "STATUS")
-    ts_command("/dev/cu.usbmodem1101", "ARM 250")
-    capture = ts_capture("/dev/cu.usbmodem1101", "capture.mat")
-    ts_command("/dev/cu.usbmodem1101", "CLEAR")
+    ts_load_timeseries_tools()
+    device = esp_ts_open("/dev/cu.usbmodem1101", 30)
+    esp_ts_command(device, "STATUS")
+    esp_ts_arm(device, 250)
+    esp_ts_wait_full(device, 2, 120)
+    capture = ts_capture(device, "capture.mat")
+    esp_ts_clear(device)
+
+Keep the same connection throughout the experiment. Opening another connection
+can reset the board on some hosts. These low-level calls do not replace the
+console's boot synchronization or its explicit motor-stop handling.
 
 The application-specific volatile controller commands are:
 
-    ts_command(port, "CONTROL GET")
-    ts_command(port, "CONTROL SET 0.25 3.0 0.0001 2.0")
-    ts_command(port, "CONTROL DEFAULTS")
+    esp_ts_command(device, "CONTROL GET")
+    esp_ts_command(device, "CONTROL SET 0.25 3.0 0.0001 2.0")
+    esp_ts_command(device, "CONTROL DEFAULTS")
 
 The firmware accepts `0 <= Kp <= 100`, `0 <= Ki <= 1000`,
 `0 <= Kd <= 10`, and `0.1 <= reference_step_period_s <= 3600`. These bounds

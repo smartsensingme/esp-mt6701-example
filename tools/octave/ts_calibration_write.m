@@ -5,6 +5,7 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
   if (nargin < 3)
     enable_after = false;
   endif
+  ts_load_timeseries_tools ();
   ts_load_angle_lut_tools ();
   required = {"bin_count", "correction_counts", "payload_crc32"};
   for index = 1:numel (required)
@@ -20,14 +21,14 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
   else
     error ("Calibration is missing full_scale_counts");
   endif
-  crc = ts_crc32_ieee (payload);
+  crc = esp_ts_crc32 (payload);
   if (crc != calibration.payload_crc32)
     error ("Calibration CRC does not match its correction table");
   endif
 
   owns_device = ischar (endpoint);
   if (owns_device)
-    device = ts_open_serial (endpoint, 10);
+    device = esp_ts_open (endpoint, 10);
   else
     device = endpoint;
   endif
@@ -79,7 +80,7 @@ function status = ts_calibration_write (endpoint, calibration, enable_after)
       error ("Calibration readback differs from the uploaded LUT");
     endif
     if (enable_after)
-      response = ts_command (device, "CAL ENABLE", false);
+      response = esp_ts_command (device, "CAL ENABLE", false);
       if (! strncmp (response, "OK command=CAL_ENABLE ", 22))
         error ("LUT verified, but enabling failed: %s", response);
       endif

@@ -3,10 +3,11 @@ function ts_console ()
     print_usage ();
   endif
 
+  ts_load_timeseries_tools ();
   clc;
   fprintf ("Console de series temporais do controle ESP32\n");
   fprintf ("Carregando instrument-control...\n");
-  ts_load_instrument_control ();
+  esp_ts_load_instrument_control ();
 
   while (true)
     port_name = choose_port ();
@@ -25,7 +26,7 @@ function exit_console = run_port_session (port_name)
   exit_console = false;
   fprintf ("\nAbrindo %s...\n", port_name);
   try
-    device = ts_open_serial (port_name, 30);
+    device = esp_ts_open (port_name, 30);
   catch err
     fprintf (2, "Nao foi possivel abrir a porta: %s\n", err.message);
     fprintf (2, ["Feche o monitor serial da USB nativa. Use a porta WCH ", ...
@@ -155,7 +156,7 @@ function port_name = choose_port ()
   port_name = "";
   while (true)
     try
-      ports = ts_list_serial_ports ();
+      ports = esp_ts_ports ();
     catch err
       fprintf (2, "Nao foi possivel listar as portas seriais: %s\n", ...
                err.message);
@@ -208,7 +209,7 @@ function response = safe_command (device, command)
   response = "";
   fprintf ("\n> %s\n", command);
   try
-    response = ts_command (device, command, false);
+    response = esp_ts_command (device, command, false);
     fprintf ("%s\n", response);
     if (strcmp (command, "STATUS") && ! valid_status (response))
       fprintf (2, ["Resposta STATUS incompleta. Feche qualquer monitor ", ...
@@ -221,7 +222,7 @@ endfunction
 
 function run_complete_experiment (device)
   try
-    status = ts_command (device, "STATUS", false);
+    status = esp_ts_command (device, "STATUS", false);
     require_status (status);
     state = response_field (status, "state");
 
@@ -234,7 +235,7 @@ function run_complete_experiment (device)
         receive_full_capture (device);
         return;
       elseif (choice == 2)
-        response = ts_command (device, "CLEAR", false);
+        response = esp_ts_command (device, "CLEAR", false);
         require_ok (response, "CLEAR");
       else
         return;
@@ -263,7 +264,7 @@ function run_complete_experiment (device)
       return;
     endif
 
-    response = ts_command (device, sprintf ("ARM %d", rate_hz), false);
+    response = esp_ts_command (device, sprintf ("ARM %d", rate_hz), false);
     require_ok (response, "ARM");
     fprintf ("%s\n", response);
     if (wait_until_full (device))
@@ -284,7 +285,7 @@ function completed = wait_until_full (device)
   status_poll_interval_s = 2.0;
   fprintf ("Aguardando o buffer; pressione Ctrl+C para cancelar.\n");
   while (true)
-    response = ts_command (device, "STATUS", false);
+    response = esp_ts_command (device, "STATUS", false);
     require_status (response);
     state = response_field (response, "state");
     samples = str2double (response_field (response, "samples"));
@@ -314,7 +315,7 @@ endfunction
 
 function receive_full_capture (device)
   try
-    status = ts_command (device, "STATUS", false);
+    status = esp_ts_command (device, "STATUS", false);
     require_status (status);
     if (! strcmp (response_field (status, "state"), "FULL"))
       fprintf ("O gravador ainda nao esta FULL.\n");
@@ -396,12 +397,12 @@ function [configuration, accepted] = configure_closed_loop_experiment (device)
       command = sprintf ("CONTROL SET %.9g %.9g %.9g %.9g", ...
                          candidate.kp, candidate.ki, candidate.kd, ...
                          candidate.reference_step_period_s);
-      response = ts_command (device, command, false);
+      response = esp_ts_command (device, command, false);
       require_ok (response, "CONTROL_SET");
       fprintf ("%s\n", response);
       configuration = parse_control_configuration (response);
     elseif (choice == 3)
-      response = ts_command (device, "CONTROL DEFAULTS", false);
+      response = esp_ts_command (device, "CONTROL DEFAULTS", false);
       require_ok (response, "CONTROL_DEFAULTS");
       fprintf ("%s\n", response);
       configuration = parse_control_configuration (response);
@@ -436,7 +437,7 @@ function value = input_default_number (label, default_value)
 endfunction
 
 function configuration = read_control_configuration (device)
-  response = ts_command (device, "CONTROL GET", false);
+  response = esp_ts_command (device, "CONTROL GET", false);
   require_ok (response, "CONTROL_GET");
   fprintf ("\n%s\n", response);
   configuration = parse_control_configuration (response);
@@ -459,7 +460,7 @@ endfunction
 function run_angle_calibration (device)
   try
     firmware_calibration = ts_calibration_status (device, false);
-    status = ts_command (device, "STATUS", false);
+    status = esp_ts_command (device, "STATUS", false);
     require_status (status);
     state = response_field (status, "state");
     if (strcmp (state, "ARMED") || strcmp (state, "CAPTURING"))
@@ -470,7 +471,7 @@ function run_angle_calibration (device)
       if (choice != 2)
         return;
       endif
-      response = ts_command (device, "CLEAR", false);
+      response = esp_ts_command (device, "CLEAR", false);
       require_ok (response, "CLEAR");
     endif
 
@@ -489,7 +490,7 @@ function run_angle_calibration (device)
       output_file = entered;
     endif
 
-    response = ts_command (device, "CAL START 500", false);
+    response = esp_ts_command (device, "CAL START 500", false);
     require_ok (response, "CAL_START");
     fprintf ("%s\n", response);
     if (! wait_until_full (device))

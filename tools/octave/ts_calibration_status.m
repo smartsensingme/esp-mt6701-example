@@ -5,7 +5,8 @@ function status = ts_calibration_status (endpoint, print_response)
   if (nargin < 2)
     print_response = true;
   endif
-  response = ts_command (endpoint, "CAL STATUS", false);
+  ts_load_timeseries_tools ();
+  response = esp_ts_command (endpoint, "CAL STATUS", false);
   if (! strncmp (response, "OK command=CAL_STATUS ", 22))
     error ("Firmware rejected CAL STATUS: %s", response);
   endif
