@@ -75,7 +75,11 @@ duration and KiB/s. Binary payloads are read according to the bytes currently
 reported as available by the serial driver, avoiding a blocking request for a
 complete final block on Windows. Progress is printed every ten percent and
 while waiting for USB data; a timeout therefore reports how many bytes of the
-advertised payload were received. With
+advertised payload were received. If the Windows driver retains the final USB
+packet, the receiver queues a `PING`; the firmware's single transport task
+answers it only after `END-DUMP`, and that subsequent write releases the pending
+bytes without changing the payload. The client consumes these synchronization
+responses before issuing `CLEAR`. With
 the current five-channel diagnostic build, select
 250 Hz for a long diagnostic trace. The calibration assistant uses 500 Hz and
 the calibration firmware profile uses three eight-second duty stages, followed

@@ -35,8 +35,9 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
     capture_id = required_number (metadata, "capture_id");
     expected_crc = uint32 (hex2dec (required_value (metadata, ...
                                                    "payload_crc32")));
-    payload = read_exact (device, payload_bytes);
+    [payload, nudge_count] = read_exact (device, payload_bytes);
     validate_dump_trailer (device, metadata, capture_id, expected_crc);
+    validate_dump_nudges (device, nudge_count);
     transfer_seconds = toc (transfer_timer);
 
     actual_crc = ts_crc32_ieee (payload);
@@ -148,6 +149,18 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
   end_unwind_protect
 endfunction
 
+function validate_dump_nudges (device, nudge_count)
+  % The firmware processes commands in one transport task. Therefore every
+  % PING written while DUMP is finishing is answered strictly after the binary
+  % payload and END-DUMP trailer, preserving unambiguous stream ordering.
+  for index = 1:nudge_count
+    response = strtrim (char (readline (device)));
+    if (! strncmp (response, "OK command=PING ", 16))
+      error ("Invalid post-DUMP synchronization response: %s", response);
+    endif
+  endfor
+endfunction
+
 function validate_dump_trailer (device, metadata, capture_id, expected_crc)
   trailer_kind = optional_value (metadata, "dump_trailer", "");
   if (! strcmp (trailer_kind, "END-DUMP"))
@@ -215,7 +228,7 @@ function value = required_number (metadata, key)
   endif
 endfunction
 
-function payload = read_exact (device, byte_count)
+function [payload, nudge_count] = read_exact (device, byte_count)
   % Read only bytes already reported by the serial back end.  On Windows, a
   % blocking read() for the next complete block may wait indefinitely near the
   % end of a USB transfer even while a shorter final fragment is buffered.
@@ -227,9 +240,12 @@ function payload = read_exact (device, byte_count)
   endif
   payload = zeros (byte_count, 1, "uint8");
   offset = 1;
+  nudge_count = 0;
+  max_nudges = 5;
   next_progress_percent = progress_step_percent;
   inactivity_timer = tic ();
   wait_report_timer = tic ();
+  nudge_timer = tic ();
   while (offset <= byte_count)
     available = floor (double (get (device, "NumBytesAvailable")));
     if (available <= 0)
@@ -244,6 +260,14 @@ function payload = read_exact (device, byte_count)
                  offset - 1, byte_count, received_percent);
         fflush (stdout);
         wait_report_timer = tic ();
+      endif
+      if (nudge_count < max_nudges && toc (nudge_timer) >= 1)
+        % A subsequent native-USB write makes the Windows driver release bytes
+        % that it occasionally retains at the end of a long transmission.
+        % PING is queued behind DUMP by the single firmware transport task.
+        write (device, uint8 (["PING", char(10)]), "uint8");
+        nudge_count += 1;
+        nudge_timer = tic ();
       endif
       pause (0.005);
       continue;
