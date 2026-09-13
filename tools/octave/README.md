@@ -29,6 +29,10 @@ Examples:
 connection open, lists the ports, and provides a complete experiment action.
 All interactive menus and confirmations are textual and remain in the Octave
 terminal. Graphs are the only windows opened by the console.
+On Windows, opening the native ESP32-S3 COM port may briefly restart the board.
+The console drains this boot text and retries `STATUS`; it enters the recorder
+menu only after receiving a complete `OK command=STATUS` response. A port that
+continues to emit `I (...)`, `W (...)`, or `E (...)` logs is rejected as UART.
 Before sending `ARM`, that action reads the volatile controller configuration
 from the ESP32 and shows `Kp`, `Ki`, `Kd`, and the reference-step period. The
 parameter choice uses a text menu in the terminal and prints each value on its

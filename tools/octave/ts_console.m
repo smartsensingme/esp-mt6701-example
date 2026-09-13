@@ -36,7 +36,14 @@ function exit_console = run_port_session (port_name)
   unwind_protect
     fprintf (["Porta aberta. O Octave deve ser o unico programa conectado ", ...
               "a esta USB nativa.\n"]);
-    safe_command (device, "STATUS");
+    [protocol_ready, initial_status] = synchronize_protocol (device);
+    if (! protocol_ready)
+      fprintf (2, ["Esta porta nao respondeu ao protocolo TSRECORDER. ", ...
+                  "Escolha a porta USB nativa VID_303A; portas UART ", ...
+                  "mostram logs I/W/E em vez de respostas OK.\n"]);
+      return;
+    endif
+    fprintf ("\n> STATUS\n%s\n", initial_status);
     change_port = false;
     while (! change_port)
       choice = text_menu (sprintf ("Gravador ESP32 - %s", port_name), ...
@@ -85,6 +92,36 @@ function exit_console = run_port_session (port_name)
     endwhile
   unwind_protect_cleanup
     clear device;
+  end_unwind_protect
+endfunction
+
+function [ready, response] = synchronize_protocol (device)
+  % Opening the native COM port can reset an ESP32-S3 on Windows. Probe only
+  % after draining boot output, and accept the port only when a complete status
+  % proves that the application transport is running.
+  ready = false;
+  response = "";
+  original_timeout = get (device, "Timeout");
+  unwind_protect
+    set (device, "Timeout", 1);
+    for attempt = 1:5
+      pause (0.4);
+      flush (device);
+      try
+        write (device, uint8 (["STATUS", char(10)]), "uint8");
+        candidate = strtrim (char (readline (device)));
+        if (valid_status (candidate))
+          response = candidate;
+          ready = true;
+          return;
+        endif
+      catch
+        % A timeout while the board is still booting is expected. The next
+        % attempt drains any late boot text and probes the transport again.
+      end_try_catch
+    endfor
+  unwind_protect_cleanup
+    set (device, "Timeout", original_timeout);
   end_unwind_protect
 endfunction
 
