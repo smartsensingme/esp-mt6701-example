@@ -43,7 +43,8 @@ their firmware defaults after reset or power loss. The selected values are also
 saved as `capture.control_config` in the MAT file.
 
 The action then sends `ARM`, polls `STATUS` every 2 seconds, automatically starts
-`DUMP` on `FULL`, validates the CRC, saves a MAT file, and opens one graph
+`DUMP FRAMED` on `FULL`, validates its terminating record and CRC, saves a MAT
+file, and opens one graph
 with four linked panels: reference plus speed, speed error, control action, and
 current. Current samples explicitly marked invalid or saturated by the firmware
 are replaced for display by the mean of their valid neighbors and highlighted

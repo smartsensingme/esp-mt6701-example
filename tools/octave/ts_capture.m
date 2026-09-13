@@ -28,15 +28,17 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
   unwind_protect
     flush (device);
     transfer_timer = tic ();
-    write (device, uint8 (["DUMP", char(10)]), "uint8");
+    write (device, uint8 (["DUMP FRAMED", char(10)]), "uint8");
 
     [metadata, header_lines] = read_header (device);
     payload_bytes = required_number (metadata, "payload_bytes");
-    payload = read_exact (device, payload_bytes);
-    transfer_seconds = toc (transfer_timer);
-
+    capture_id = required_number (metadata, "capture_id");
     expected_crc = uint32 (hex2dec (required_value (metadata, ...
                                                    "payload_crc32")));
+    payload = read_exact (device, payload_bytes);
+    validate_dump_trailer (device, metadata, capture_id, expected_crc);
+    transfer_seconds = toc (transfer_timer);
+
     actual_crc = ts_crc32_ieee (payload);
     if (actual_crc != expected_crc)
       error ("CRC mismatch: received %08X, calculated %08X", ...
@@ -90,7 +92,7 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
     endif
     capture = struct ();
     capture.protocol = "TSRECORDER/1";
-    capture.capture_id = required_number (metadata, "capture_id");
+    capture.capture_id = capture_id;
     capture.producer_rate_hz = required_number (metadata, ...
                                                 "producer_rate_hz");
     capture.sample_rate_hz = sample_rate_hz;
@@ -144,6 +146,22 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
       clear device;
     endif
   end_unwind_protect
+endfunction
+
+function validate_dump_trailer (device, metadata, capture_id, expected_crc)
+  trailer_kind = optional_value (metadata, "dump_trailer", "");
+  if (! strcmp (trailer_kind, "END-DUMP"))
+    error (["Firmware does not support framed DUMP. Update and flash the ", ...
+            "current firmware before downloading on Windows."]);
+  endif
+
+  expected = sprintf ("END-DUMP capture_id=%d payload_crc32=%08X", ...
+                      capture_id, expected_crc);
+  received = strtrim (char (readline (device)));
+  if (! strcmp (received, expected))
+    error ("Invalid DUMP trailer: expected '%s', received '%s'", ...
+           expected, received);
+  endif
 endfunction
 
 function [metadata, header_lines] = read_header (device)
