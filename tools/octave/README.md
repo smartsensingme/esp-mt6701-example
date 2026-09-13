@@ -43,8 +43,10 @@ their firmware defaults after reset or power loss. The selected values are also
 saved as `capture.control_config` in the MAT file.
 
 The action then sends `ARM`, polls `STATUS` every 2 seconds, automatically starts
-the retryable `DUMP BEGIN`/`DUMP BLOCK`/`DUMP END` sequence on `FULL`, validates
-each hexadecimal block and the overall CRC, saves a MAT file, and opens one graph
+fast `DUMP FRAMED` binary transfer on macOS/Linux or the retryable `DUMP
+BEGIN`/`DUMP BLOCK`/`DUMP END` sequence on Windows. It validates the framing,
+per-block checks where applicable, and the overall CRC, saves a MAT file, and
+opens one graph
 with four linked panels: reference plus speed, speed error, control action, and
 current. Current samples explicitly marked invalid or saturated by the firmware
 are replaced for display by the mean of their valid neighbors and highlighted
@@ -71,11 +73,12 @@ For an open-loop capture containing the raw `angle_raw` channel (legacy files
 named it `angle`), the panels change
 to speed, wrapped sensor angle, control duty, and current. The console prints
 the predicted/actual acquisition duration separately from the measured USB DUMP
-duration and KiB/s. The receiver requests at most 512 raw bytes per command;
-each block arrives as an identified hexadecimal line with its own CRC and can
-be retried independently. This is slower than one continuous binary stream but
-avoids the Windows driver's ambiguous retained-tail behavior and prevents text
-responses from being mistaken for samples. With
+duration, transport mode, and KiB/s. On Windows, the receiver requests at most
+512 raw bytes per command; each block arrives as an identified hexadecimal line
+with its own CRC and can be retried independently. This is slower than the
+continuous binary stream retained on macOS/Linux, but avoids the Windows
+driver's ambiguous retained-tail behavior and prevents text responses from
+being mistaken for samples. With
 the current five-channel diagnostic build, select
 250 Hz for a long diagnostic trace. The calibration assistant uses 500 Hz and
 the calibration firmware profile uses three eight-second duty stages, followed
@@ -147,6 +150,10 @@ This application deliberately gives the host exclusive ownership of the
 ARM/CLEAR sequence; there is no application-level automatic pretrigger mode.
 Do not leave another serial monitor connected to the native USB port: two
 readers split protocol bytes. Use the WCH/USB-UART port for firmware logs.
+Leaving the console sends `CONTROL STOP` before closing the port. The real-time
+task consumes that request, resets the controller to IDLE, and applies the
+application's zero-command BRAKE behavior; motor shutdown therefore no longer
+depends on whether an operating system happens to reset the USB device.
 
 To clear automatically only after a valid CRC and save without plotting:
 

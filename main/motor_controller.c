@@ -151,6 +151,25 @@ void motor_controller_start_open_loop_test(motor_controller_t *controller) {
 }
 
 /**
+ * @brief Reset an active controller to its safe IDLE mode.
+ *
+ * Called by realtime_task() for a CONTROL STOP request. See motor_controller.h
+ * for the public contract.
+ */
+void motor_controller_stop(motor_controller_t *controller) {
+  if (controller != NULL) {
+    /* Preserve the current valid experiment configuration so stopping does not
+     * silently alter the values that CONTROL GET reports for the next ARM. */
+    motor_controller_config_t configuration = controller->config;
+    if (!motor_controller_config_is_valid(&configuration)) {
+      configuration = default_controller_config;
+    }
+    reset_controller(controller, MOTOR_CONTROLLER_MODE_IDLE, &configuration);
+    controller->reference_rpm = 0.0f;
+  }
+}
+
+/**
  * @brief Advance the selected profile and calculate its signed motor command.
  *
  * Called only by realtime_task() at the 1 kHz divided rate. See

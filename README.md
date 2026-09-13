@@ -117,8 +117,9 @@ A full buffer stays immutable until `CLEAR`. Metadata, addresses, scaling,
 saturation/invalid counters, and a stable payload view are exposed to the
 separate USB transport component. The native USB Serial/JTAG port accepts
 `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`, `CONTROL ...`, `CAL ...`, and `HELP`. `DUMP` returns a
-self-describing text header followed by little-endian binary samples protected
-by CRC-32/IEEE. See `tools/octave/README.md` for the receiver and plotting
+self-describing metadata followed by either fast binary samples on macOS/Linux
+or retryable hexadecimal blocks on Windows, all protected by CRC-32/IEEE. See
+`tools/octave/README.md` for the receiver and plotting
 workflow. UART0 remains the firmware log/flash port so logs cannot enter the
 binary stream. Run `ts_console()` in Octave for the guided port selection and
 recorder menus. Capture is deliberately host-driven: an experiment starts only

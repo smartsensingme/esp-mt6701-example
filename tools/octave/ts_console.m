@@ -33,6 +33,7 @@ function exit_console = run_port_session (port_name)
     return;
   end_try_catch
 
+  protocol_ready = false;
   unwind_protect
     fprintf (["Porta aberta. O Octave deve ser o unico programa conectado ", ...
               "a esta USB nativa.\n"]);
@@ -91,7 +92,32 @@ function exit_console = run_port_session (port_name)
       endswitch
     endwhile
   unwind_protect_cleanup
+    if (protocol_ready)
+      stop_motor_on_exit (device);
+    endif
     clear device;
+  end_unwind_protect
+endfunction
+
+function stop_motor_on_exit (device)
+  % Closing a native USB serial object does not reset the ESP32 on every host.
+  % Request a deterministic controller transition to IDLE before releasing it.
+  original_timeout = get (device, "Timeout");
+  unwind_protect
+    set (device, "Timeout", 1);
+    try
+      write (device, uint8 (["CONTROL STOP", char(10)]), "uint8");
+      response = strtrim (char (readline (device)));
+      if (! strncmp (response, "OK command=CONTROL_STOP ", 24))
+        fprintf (2, "Aviso: resposta inesperada ao parar o motor: %s\n", ...
+                 response);
+      endif
+    catch err
+      fprintf (2, "Aviso: nao foi possivel confirmar a parada do motor: %s\n", ...
+               err.message);
+    end_try_catch
+  unwind_protect_cleanup
+    set (device, "Timeout", original_timeout);
   end_unwind_protect
 endfunction
 
@@ -308,7 +334,11 @@ function download_capture (device, output_file, clear_after, control_config)
   if (nargin < 4)
     control_config = [];
   endif
-  fprintf ("Recebendo a captura binaria...\n");
+  if (ispc ())
+    fprintf ("Recebendo a captura em blocos verificados...\n");
+  else
+    fprintf ("Recebendo a captura binaria...\n");
+  endif
   additional_fields = struct ();
   if (! isempty (control_config))
     additional_fields.control_config = control_config;
@@ -317,9 +347,7 @@ function download_capture (device, output_file, clear_after, control_config)
                         additional_fields);
   figure_handle = ts_plot_capture (capture);
   drawnow ();
-  fprintf (["Foi aberta uma figura com os canais da captura. ", ...
-            "Feche-a para voltar ao menu.\n"]);
-  waitfor (figure_handle);
+  fprintf ("Foi aberta uma figura com os canais da captura.\n");
 endfunction
 
 function [configuration, accepted] = configure_closed_loop_experiment (device)
@@ -585,7 +613,9 @@ endfunction
 
 function rate_hz = choose_rate ()
   rate_hz = [];
-  rates = {"250 Hz (recomendado para ensaio completo)", "500 Hz", "1000 Hz", ...
+  fprintf (["A taxa abaixo afeta somente o registro; a malha de controle ", ...
+            "permanece em 1 kHz.\n"]);
+  rates = {"250 Hz", "500 Hz", "1000 Hz (uma amostra por ciclo de controle)", ...
            "200 Hz", "100 Hz", ...
            "50 Hz", "20 Hz", "10 Hz", "Digitar outra taxa", "Cancelar"};
   values = [250, 500, 1000, 200, 100, 50, 20, 10];

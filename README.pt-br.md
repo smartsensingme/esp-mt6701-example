@@ -121,7 +121,8 @@ visão estável do payload ao componente separado de transporte USB. A porta USB
 Serial/JTAG nativa aceita `PING`, `INFO`, `STATUS`, `ARM`, `DUMP`, `CLEAR`,
 `CONTROL ...`,
 `CAL ...` e `HELP`. `DUMP` envia um cabeçalho texto autodescritivo seguido das amostras
-binárias little-endian protegidas por CRC-32/IEEE. Consulte
+little-endian binárias no macOS/Linux ou por blocos hexadecimais repetíveis no
+Windows, sempre protegidas por CRC-32/IEEE. Consulte
 `tools/octave/README.md` para receber, converter e plotar a captura. A UART0
 continua sendo a porta de gravação e logs, impedindo que logs entrem no fluxo
 binário. Execute `ts_console()` no Octave para selecionar a porta e operar o

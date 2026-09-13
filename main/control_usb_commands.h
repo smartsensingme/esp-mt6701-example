@@ -14,7 +14,8 @@ extern "C" {
  * realtime_loop_start() concatenates this string with the CAL command help.
  */
 #define CONTROL_USB_COMMAND_HELP                                               \
-  "CONTROL_GET,CONTROL_SET_<kp>_<ki>_<kd>_<period_s>,CONTROL_DEFAULTS"
+  "CONTROL_GET,CONTROL_SET_<kp>_<ki>_<kd>_<period_s>,CONTROL_DEFAULTS,"       \
+  "CONTROL_STOP"
 
 /**
  * @brief Non-owning link between the USB task and volatile controller settings.

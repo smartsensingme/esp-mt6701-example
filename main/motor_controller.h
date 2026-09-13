@@ -152,6 +152,17 @@ bool motor_controller_start_closed_loop_test(
 void motor_controller_start_open_loop_test(motor_controller_t *controller);
 
 /**
+ * @brief Stop the active profile and place the controller in IDLE.
+ *
+ * Called by realtime_task() after it consumes a host CONTROL STOP request. The
+ * current validated configuration is retained for diagnostics, while PID,
+ * profile, reference, and output state are reset. A null pointer is ignored.
+ *
+ * @param controller Initialized control-task-owned instance.
+ */
+void motor_controller_stop(motor_controller_t *controller);
+
+/**
  * @brief Calculate the 1 kHz motor command.
  *
  * Output remains in COAST until a test is explicitly started. Closed-loop mode

@@ -28,15 +28,26 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
   unwind_protect
     flush (device);
     transfer_timer = tic ();
-    write (device, uint8 (["DUMP BEGIN", char(10)]), "uint8");
+    if (ispc ())
+      transfer_mode = "block-hex";
+      write (device, uint8 (["DUMP BEGIN", char(10)]), "uint8");
+    else
+      transfer_mode = "binary-framed";
+      write (device, uint8 (["DUMP FRAMED", char(10)]), "uint8");
+    endif
 
     [metadata, header_lines] = read_header (device);
     payload_bytes = required_number (metadata, "payload_bytes");
     capture_id = required_number (metadata, "capture_id");
     expected_crc = uint32 (hex2dec (required_value (metadata, ...
                                                    "payload_crc32")));
-    payload = read_dump_blocks (device, capture_id, payload_bytes);
-    finish_dump_blocks (device, capture_id);
+    if (ispc ())
+      payload = read_dump_blocks (device, capture_id, payload_bytes);
+      finish_dump_blocks (device, capture_id);
+    else
+      payload = read_binary_payload (device, payload_bytes);
+      validate_dump_trailer (device, metadata, capture_id, expected_crc);
+    endif
     transfer_seconds = toc (transfer_timer);
 
     actual_crc = ts_crc32_ieee (payload);
@@ -108,6 +119,7 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
     capture.header_lines = header_lines;
     capture.usb_transfer_seconds = transfer_seconds;
     capture.usb_transfer_kib_s = payload_bytes / 1024 / transfer_seconds;
+    capture.usb_transfer_mode = transfer_mode;
 
     extra_names = fieldnames (additional_fields);
     for extra_index = 1:numel (extra_names)
@@ -121,8 +133,9 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
     fprintf ("Capture %d: %d samples, %d channels, %.3f s, CRC %08X OK\n", ...
              capture.capture_id, sample_count, channel_count, ...
              sample_count / sample_rate_hz, actual_crc);
-    fprintf ("USB DUMP: %d bytes in %.3f s (%.1f KiB/s)\n", ...
-             payload_bytes, transfer_seconds, capture.usb_transfer_kib_s);
+    fprintf ("USB DUMP (%s): %d bytes in %.3f s (%.1f KiB/s)\n", ...
+             transfer_mode, payload_bytes, transfer_seconds, ...
+             capture.usb_transfer_kib_s);
 
     if (! isempty (output_file))
       save ("-mat7-binary", output_file, "capture");
@@ -146,6 +159,30 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
       clear device;
     endif
   end_unwind_protect
+endfunction
+
+function payload = read_binary_payload (device, byte_count)
+  % macOS and Linux reliably preserve the long binary stream and are much
+  % faster without hexadecimal expansion and per-block round trips.
+  payload = read (device, byte_count, "uint8");
+  payload = uint8 (payload(:));
+  if (numel (payload) != byte_count)
+    error ("USB binary payload has %d bytes; expected %d", ...
+           numel (payload), byte_count);
+  endif
+endfunction
+
+function validate_dump_trailer (device, metadata, capture_id, expected_crc)
+  if (! strcmp (optional_value (metadata, "dump_trailer", ""), "END-DUMP"))
+    error ("Firmware does not advertise the framed DUMP trailer");
+  endif
+  expected = sprintf ("END-DUMP capture_id=%d payload_crc32=%08X", ...
+                      capture_id, expected_crc);
+  received = strtrim (char (readline (device)));
+  if (! strcmp (received, expected))
+    error ("Invalid DUMP trailer: expected '%s', received '%s'", ...
+           expected, received);
+  endif
 endfunction
 
 function payload = read_dump_blocks (device, capture_id, byte_count)

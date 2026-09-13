@@ -36,6 +36,7 @@
 #include "mt6701.h"
 #include "realtime_telemetry.h"
 #include <stdatomic.h>
+#include <strings.h>
 
 /* Core allocation: keep console/system work away from the control core. */
 #define CONTROL_CORE_ID 1
@@ -180,6 +181,9 @@ typedef enum {
 } capture_request_t;
 
 static atomic_int pending_capture_request;
+/* USB publishes an explicit stop; only Core 1 mutates controller/driver state.
+ */
+static atomic_bool pending_control_stop;
 /* The USB task alone edits requested_closed_loop_config. Before publishing a
  * CLOSED_LOOP request with release ordering, it copies a coherent snapshot to
  * pending_closed_loop_config; the real-time task reads that snapshot only
@@ -261,6 +265,11 @@ application_usb_command_handler(const char *command,
   /* Dispatch block: contexts have static storage and are selected per family.
    */
   (void)context;
+  if (strcasecmp(command, "CONTROL STOP") == 0) {
+    atomic_store_explicit(&pending_control_stop, true, memory_order_release);
+    io->sendf("OK command=CONTROL_STOP protocol=1 pending=1\n");
+    return true;
+  }
   if (control_usb_command_handler(command, io, &control_command_context)) {
     return true;
   }
@@ -804,6 +813,16 @@ static void realtime_task(void *argument) {
                            control_dt_us);
       int64_t control_stage_start_us = esp_rt_diag_stage_begin();
 
+      /* Stop-request block: the USB task requests shutdown, but the real-time
+       * owner resets controller state and applies BRAKE on this control tick.
+       */
+      if (atomic_exchange_explicit(&pending_control_stop, false,
+                                   memory_order_acq_rel)) {
+        atomic_store_explicit(&pending_capture_request, CAPTURE_REQUEST_NONE,
+                              memory_order_release);
+        motor_controller_stop(&controller);
+      }
+
       /* Profile-request block: synchronize USB ARM with controller reset only
        * inside the 1 kHz owner task. */
       esp_timeseries_state_t recorder_state = esp_timeseries_get_state();
@@ -907,6 +926,7 @@ esp_err_t realtime_loop_start(struct engine_config *motor) {
 
   loop_context.motor = motor;
   atomic_init(&pending_capture_request, CAPTURE_REQUEST_NONE);
+  atomic_init(&pending_control_stop, false);
   motor_controller_get_default_config(&requested_closed_loop_config);
   pending_closed_loop_config = requested_closed_loop_config;
 
