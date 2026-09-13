@@ -185,7 +185,7 @@ rotation-synchronous ripple.
 1.  **Clone the project and its dependencies:**
     This repository uses Git submodules. Clone it recursively:
     ```bash
-    git clone --recursive git@github-ssme:smartsensingme/esp-mt6701-example-esp-idf.git
+    git clone --recursive https://github.com/smartsensingme/esp-mt6701-example.git
     ```
     If you have already cloned the project without submodules, fetch the dependencies by running:
     ```bash
@@ -226,7 +226,7 @@ Since the drivers were developed as clean, decoupled ESP-IDF components, you can
    ```
 2. Add the H-Bridge engine driver:
    ```bash
-   git submodule add git@github-ssme:smartsensingme/esp-engine-driver-.git components/esp-engine-driver
+   git submodule add https://github.com/smartsensingme/esp-engine-driver-.git components/esp-engine-driver
    ```
 3. Include them in your application code:
    ```c

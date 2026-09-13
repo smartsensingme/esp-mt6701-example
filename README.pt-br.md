@@ -189,7 +189,7 @@ redução da ondulação síncrona com a rotação.
 1.  **Clone o projeto e suas dependências:**
     Este repositório utiliza submódulos do Git. Clone de forma recursiva:
     ```bash
-    git clone --recursive git@github-ssme:smartsensingme/esp-mt6701-example-esp-idf.git
+    git clone --recursive https://github.com/smartsensingme/esp-mt6701-example.git
     ```
     Se você já clonou o projeto sem os submódulos, baixe as dependências executando:
     ```bash
@@ -230,7 +230,7 @@ Como os drivers foram desenvolvidos como componentes ESP-IDF limpos e desacoplad
    ```
 2. Adicione o driver do motor:
    ```bash
-   git submodule add git@github-ssme:smartsensingme/esp-engine-driver-.git components/esp-engine-driver
+   git submodule add https://github.com/smartsensingme/esp-engine-driver-.git components/esp-engine-driver
    ```
 3. No código da sua aplicação, inclua-os:
    ```c
