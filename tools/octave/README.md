@@ -70,9 +70,11 @@ For an open-loop capture containing the raw `angle_raw` channel (legacy files
 named it `angle`), the panels change
 to speed, wrapped sensor angle, control duty, and current. The console prints
 the predicted/actual acquisition duration separately from the measured USB DUMP
-duration and KiB/s. Binary payloads are read in small blocks for compatibility
-with Windows serial drivers, with progress printed every ten percent; a timeout
-therefore reports how many bytes of the advertised payload were received. With
+duration and KiB/s. Binary payloads are read according to the bytes currently
+reported as available by the serial driver, avoiding a blocking request for a
+complete final block on Windows. Progress is printed every ten percent and
+while waiting for USB data; a timeout therefore reports how many bytes of the
+advertised payload were received. With
 the current five-channel diagnostic build, select
 250 Hz for a long diagnostic trace. The calibration assistant uses 500 Hz and
 the calibration firmware profile uses three eight-second duty stages, followed
