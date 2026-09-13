@@ -28,16 +28,15 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
   unwind_protect
     flush (device);
     transfer_timer = tic ();
-    write (device, uint8 (["DUMP FRAMED", char(10)]), "uint8");
+    write (device, uint8 (["DUMP BEGIN", char(10)]), "uint8");
 
     [metadata, header_lines] = read_header (device);
     payload_bytes = required_number (metadata, "payload_bytes");
     capture_id = required_number (metadata, "capture_id");
     expected_crc = uint32 (hex2dec (required_value (metadata, ...
                                                    "payload_crc32")));
-    [payload, nudge_count] = read_exact (device, payload_bytes);
-    validate_dump_trailer (device, metadata, capture_id, expected_crc);
-    validate_dump_nudges (device, nudge_count);
+    payload = read_dump_blocks (device, capture_id, payload_bytes);
+    finish_dump_blocks (device, capture_id);
     transfer_seconds = toc (transfer_timer);
 
     actual_crc = ts_crc32_ieee (payload);
@@ -149,32 +148,116 @@ function capture = ts_capture (endpoint, output_file, clear_after, make_plot, ..
   end_unwind_protect
 endfunction
 
-function validate_dump_nudges (device, nudge_count)
-  % The firmware processes commands in one transport task. Therefore every
-  % PING written while DUMP is finishing is answered strictly after the binary
-  % payload and END-DUMP trailer, preserving unambiguous stream ordering.
-  for index = 1:nudge_count
-    response = strtrim (char (readline (device)));
-    if (! strncmp (response, "OK command=PING ", 16))
-      error ("Invalid post-DUMP synchronization response: %s", response);
-    endif
-  endfor
+function payload = read_dump_blocks (device, capture_id, byte_count)
+  % Request independently identified blocks. Hex encoding costs bandwidth, but
+  % prevents delayed control text from ever being accepted as binary samples.
+  block_bytes = 512;
+  payload = zeros (byte_count, 1, "uint8");
+  original_timeout = get (device, "Timeout");
+  unwind_protect
+    set (device, "Timeout", 2);
+    offset = 0;
+    next_progress_percent = 10;
+    while (offset < byte_count)
+      requested = min (block_bytes, byte_count - offset);
+      block = request_dump_block (device, capture_id, offset, requested);
+      payload((offset + 1):(offset + requested)) = block;
+      offset += requested;
+      received_percent = floor (100 * offset / byte_count);
+      if (received_percent >= next_progress_percent || offset == byte_count)
+        fprintf ("\rDownload: %6d/%6d bytes (%3d%%)", ...
+                 offset, byte_count, received_percent);
+        fflush (stdout);
+        while (next_progress_percent <= received_percent)
+          next_progress_percent += 10;
+        endwhile
+      endif
+    endwhile
+    fprintf ("\n");
+  unwind_protect_cleanup
+    set (device, "Timeout", original_timeout);
+  end_unwind_protect
 endfunction
 
-function validate_dump_trailer (device, metadata, capture_id, expected_crc)
-  trailer_kind = optional_value (metadata, "dump_trailer", "");
-  if (! strcmp (trailer_kind, "END-DUMP"))
-    error (["Firmware does not support framed DUMP. Update and flash the ", ...
-            "current firmware before downloading on Windows."]);
-  endif
+function block = request_dump_block (device, capture_id, offset, length)
+  command = sprintf ("DUMP BLOCK %d %d %d", capture_id, offset, length);
+  write (device, uint8 ([command, char(10)]), "uint8");
+  failures = 0;
+  while (failures < 5)
+    try
+      line = strtrim (char (readline (device)));
+    catch
+      failures += 1;
+      write (device, uint8 ([command, char(10)]), "uint8");
+      continue;
+    end_try_catch
+    if (strncmp (line, "ERR ", 4))
+      error ("Firmware rejected DUMP BLOCK: %s", line);
+    endif
+    fields = regexp (line, ["^DATA capture_id=([0-9]+) offset=([0-9]+) ", ...
+                            "length=([0-9]+) crc32=([0-9A-Fa-f]{8}) ", ...
+                            "hex=([0-9A-Fa-f]*)$"], "tokens", "once");
+    if (isempty (fields))
+      failures += 1;
+      write (device, uint8 ([command, char(10)]), "uint8");
+      continue;
+    endif
+    received_id = str2double (fields{1});
+    received_offset = str2double (fields{2});
+    received_length = str2double (fields{3});
+    if (received_id != capture_id || received_offset != offset)
+      % A retry may leave a duplicate response queued. Ignore it; the response
+      % for the requested offset follows in the firmware command order.
+      continue;
+    endif
+    encoded = fields{5};
+    if (received_length != length || numel (encoded) != 2 * length)
+      failures += 1;
+      write (device, uint8 ([command, char(10)]), "uint8");
+      continue;
+    endif
+    pairs = reshape (encoded, 2, [])';
+    block = uint8 (hex2dec (pairs));
+    expected_crc = uint32 (hex2dec (fields{4}));
+    if (ts_crc32_ieee (block) != expected_crc)
+      failures += 1;
+      write (device, uint8 ([command, char(10)]), "uint8");
+      continue;
+    endif
+    return;
+  endwhile
+  error ("DUMP BLOCK failed after retries at offset %d", offset);
+endfunction
 
-  expected = sprintf ("END-DUMP capture_id=%d payload_crc32=%08X", ...
-                      capture_id, expected_crc);
-  received = strtrim (char (readline (device)));
-  if (! strcmp (received, expected))
-    error ("Invalid DUMP trailer: expected '%s', received '%s'", ...
-           expected, received);
-  endif
+function finish_dump_blocks (device, capture_id)
+  command = sprintf ("DUMP END %d", capture_id);
+  expected = sprintf ("OK command=DUMP_END protocol=1 capture_id=%d", ...
+                      capture_id);
+  original_timeout = get (device, "Timeout");
+  unwind_protect
+    set (device, "Timeout", 2);
+    write (device, uint8 ([command, char(10)]), "uint8");
+    for attempt = 1:10
+      try
+        response = strtrim (char (readline (device)));
+        if (strcmp (response, expected))
+          return;
+        endif
+        if (strncmp (response, "ERR ", 4))
+          error ("Firmware rejected DUMP END: %s", response);
+        endif
+        % Delayed duplicate DATA lines are harmless and are drained here.
+      catch err
+        if (! isempty (strfind (err.message, "Firmware rejected")))
+          rethrow (err);
+        endif
+      end_try_catch
+      write (device, uint8 ([command, char(10)]), "uint8");
+    endfor
+    error ("DUMP END did not synchronize after retries");
+  unwind_protect_cleanup
+    set (device, "Timeout", original_timeout);
+  end_unwind_protect
 endfunction
 
 function [metadata, header_lines] = read_header (device)
@@ -226,77 +309,4 @@ function value = required_number (metadata, key)
   if (! isfinite (value))
     error ("Header key %s is not numeric: %s", key, text);
   endif
-endfunction
-
-function [payload, nudge_count] = read_exact (device, byte_count)
-  % Read only bytes already reported by the serial back end.  On Windows, a
-  % blocking read() for the next complete block may wait indefinitely near the
-  % end of a USB transfer even while a shorter final fragment is buffered.
-  read_chunk_bytes = 4096;
-  progress_step_percent = 10;
-  inactivity_timeout_s = double (get (device, "Timeout"));
-  if (! isfinite (inactivity_timeout_s) || inactivity_timeout_s <= 0)
-    inactivity_timeout_s = 30;
-  endif
-  payload = zeros (byte_count, 1, "uint8");
-  offset = 1;
-  nudge_count = 0;
-  max_nudges = 5;
-  next_progress_percent = progress_step_percent;
-  inactivity_timer = tic ();
-  wait_report_timer = tic ();
-  nudge_timer = tic ();
-  while (offset <= byte_count)
-    available = floor (double (get (device, "NumBytesAvailable")));
-    if (available <= 0)
-      if (toc (inactivity_timer) >= inactivity_timeout_s)
-        fprintf ("\n");
-        error ("USB timeout after %d of %d payload bytes", offset - 1, ...
-               byte_count);
-      endif
-      if (toc (wait_report_timer) >= 2)
-        received_percent = floor (100 * (offset - 1) / byte_count);
-        fprintf ("\rDownload: %6d/%6d bytes (%3d%%), aguardando USB...", ...
-                 offset - 1, byte_count, received_percent);
-        fflush (stdout);
-        wait_report_timer = tic ();
-      endif
-      if (nudge_count < max_nudges && toc (nudge_timer) >= 1)
-        % A subsequent native-USB write makes the Windows driver release bytes
-        % that it occasionally retains at the end of a long transmission.
-        % PING is queued behind DUMP by the single firmware transport task.
-        write (device, uint8 (["PING", char(10)]), "uint8");
-        nudge_count += 1;
-        nudge_timer = tic ();
-      endif
-      pause (0.005);
-      continue;
-    endif
-
-    remaining = byte_count - offset + 1;
-    requested = min ([remaining, read_chunk_bytes, available]);
-    chunk = read (device, requested, "uint8");
-    if (isempty (chunk))
-      pause (0.005);
-      continue;
-    endif
-    chunk = uint8 (chunk(:));
-    last = offset + numel (chunk) - 1;
-    payload(offset:last) = chunk;
-    offset = last + 1;
-    inactivity_timer = tic ();
-
-    % Report bounded progress so a slow or interrupted Windows transfer is
-    % distinguishable from a frozen Octave process.
-    received_percent = floor (100 * (offset - 1) / byte_count);
-    if (received_percent >= next_progress_percent || offset > byte_count)
-      fprintf ("\rDownload: %6d/%6d bytes (%3d%%)", ...
-               offset - 1, byte_count, received_percent);
-      fflush (stdout);
-      while (next_progress_percent <= received_percent)
-        next_progress_percent += progress_step_percent;
-      endwhile
-    endif
-  endwhile
-  fprintf ("\n");
 endfunction

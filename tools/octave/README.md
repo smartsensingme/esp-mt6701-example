@@ -43,8 +43,8 @@ their firmware defaults after reset or power loss. The selected values are also
 saved as `capture.control_config` in the MAT file.
 
 The action then sends `ARM`, polls `STATUS` every 2 seconds, automatically starts
-`DUMP FRAMED` on `FULL`, validates its terminating record and CRC, saves a MAT
-file, and opens one graph
+the retryable `DUMP BEGIN`/`DUMP BLOCK`/`DUMP END` sequence on `FULL`, validates
+each hexadecimal block and the overall CRC, saves a MAT file, and opens one graph
 with four linked panels: reference plus speed, speed error, control action, and
 current. Current samples explicitly marked invalid or saturated by the firmware
 are replaced for display by the mean of their valid neighbors and highlighted
@@ -71,15 +71,11 @@ For an open-loop capture containing the raw `angle_raw` channel (legacy files
 named it `angle`), the panels change
 to speed, wrapped sensor angle, control duty, and current. The console prints
 the predicted/actual acquisition duration separately from the measured USB DUMP
-duration and KiB/s. Binary payloads are read according to the bytes currently
-reported as available by the serial driver, avoiding a blocking request for a
-complete final block on Windows. Progress is printed every ten percent and
-while waiting for USB data; a timeout therefore reports how many bytes of the
-advertised payload were received. If the Windows driver retains the final USB
-packet, the receiver queues a `PING`; the firmware's single transport task
-answers it only after `END-DUMP`, and that subsequent write releases the pending
-bytes without changing the payload. The client consumes these synchronization
-responses before issuing `CLEAR`. With
+duration and KiB/s. The receiver requests at most 512 raw bytes per command;
+each block arrives as an identified hexadecimal line with its own CRC and can
+be retried independently. This is slower than one continuous binary stream but
+avoids the Windows driver's ambiguous retained-tail behavior and prevents text
+responses from being mistaken for samples. With
 the current five-channel diagnostic build, select
 250 Hz for a long diagnostic trace. The calibration assistant uses 500 Hz and
 the calibration firmware profile uses three eight-second duty stages, followed
