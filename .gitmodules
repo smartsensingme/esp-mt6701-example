@@ -25,3 +25,6 @@
 [submodule "components/esp_timeseries_usb_transport"]
 	path = components/esp_timeseries_usb_transport
 	url = https://github.com/smartsensingme/esp_timeseries_usb_transport.git
+[submodule "tools/esp_timeseries_octave"]
+	path = tools/esp_timeseries_octave
+	url = https://github.com/smartsensingme/esp_timeseries_octave.git
